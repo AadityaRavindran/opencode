@@ -37,9 +37,12 @@ import { SessionRevert } from "./session/revert"
 import { Revert } from "@opencode-ai/schema/revert"
 import { FSUtil } from "./fs-util"
 import { SessionDurable } from "@opencode-ai/schema/durable-event-manifest"
+import { SessionRecursive } from "@opencode-ai/schema/session-recursive"
 
 export const RevertState = Revert.State
 export type RevertState = Revert.State
+export const Recursive = SessionRecursive.Info
+export type Recursive = SessionRecursive.Info
 
 // get project -> project.locations
 //
@@ -151,6 +154,10 @@ export interface Interface {
     delivery?: SessionInput.Delivery
     resume?: boolean
   }) => Effect.Effect<SessionInput.Admitted, NotFoundError | PromptConflictError>
+  readonly recursive: (input: {
+    sessionID: SessionSchema.ID
+    recursive: SessionRecursive.Info
+  }) => Effect.Effect<void, NotFoundError>
   readonly shell: (input: {
     id?: EventV2.ID
     sessionID: SessionSchema.ID
@@ -384,6 +391,14 @@ const layer = Layer.effect(
           }),
         ),
       ),
+      recursive: Effect.fn("V2Session.recursive")(function* (input) {
+        yield* result.get(input.sessionID)
+        yield* events.publish(SessionEvent.RecursiveModeChanged, {
+          sessionID: input.sessionID,
+          timestamp: yield* DateTime.now,
+          recursive: input.recursive,
+        })
+      }),
       shell: Effect.fn("V2Session.shell")(function* () {
         return yield* new OperationUnavailableError({ operation: "shell" })
       }),

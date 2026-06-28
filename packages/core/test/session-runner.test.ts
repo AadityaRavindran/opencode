@@ -291,7 +291,10 @@ const it = testEffect(
 const sessionID = SessionV2.ID.make("ses_runner_test")
 const otherSessionID = SessionV2.ID.make("ses_runner_other")
 
-const insertSession = (id: SessionV2.ID) =>
+const insertSession = (
+  id: SessionV2.ID,
+  input: { readonly parentID?: SessionV2.ID; readonly title?: string; readonly metadata?: Record<string, unknown> } = {},
+) =>
   Effect.gen(function* () {
     const { db } = yield* Database.Service
     yield* db
@@ -301,8 +304,10 @@ const insertSession = (id: SessionV2.ID) =>
         project_id: Project.ID.global,
         slug: id,
         directory: "/project",
-        title: "test",
+        title: input.title ?? "test",
         version: "test",
+        parent_id: input.parentID,
+        metadata: input.metadata,
       })
       .onConflictDoNothing()
       .run()
@@ -392,6 +397,44 @@ const replaySessionProjection = (id: SessionV2.ID) =>
       })),
     )
   })
+
+const delegateFailure = Effect.fn("test.delegateFailure")(function* (
+  id: SessionV2.ID,
+  input: { readonly description?: string; readonly prompt?: string; readonly subagent_type?: string },
+) {
+  const session = yield* SessionV2.Service
+  yield* session.recursive({ sessionID: id, recursive: { enabled: true, strategy: "rah" } })
+  yield* session.prompt({ sessionID: id, prompt: Prompt.make({ text: "Delegate" }), resume: false })
+  requests.length = 0
+  responses = [
+    [
+      LLMEvent.stepStart({ index: 0 }),
+      LLMEvent.toolCall({
+        id: "call-delegate",
+        name: "delegate_task",
+        input: {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+          ...input,
+        },
+      }),
+      LLMEvent.stepFinish({ index: 0, reason: "tool-calls" }),
+      LLMEvent.finish({ reason: "tool-calls" }),
+    ],
+    [
+      LLMEvent.stepStart({ index: 0 }),
+      LLMEvent.textStart({ id: "text-after-delegate-error" }),
+      LLMEvent.textDelta({ id: "text-after-delegate-error", text: "Recovered" }),
+      LLMEvent.textEnd({ id: "text-after-delegate-error" }),
+      LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+      LLMEvent.finish({ reason: "stop" }),
+    ],
+  ]
+
+  yield* session.resume(id)
+  return yield* session.context(id)
+})
 
 type FragmentKind = "text" | "reasoning" | "tool input"
 
@@ -2561,7 +2604,139 @@ describe("SessionRunnerLLM", () => {
     }),
   )
 
-  it.effect("returns unexpected local tool defects to the model and continues", () =>
+  it.effect("V2 delegate_task rejects oversized prompts", () =>
+    Effect.gen(function* () {
+      yield* setup
+
+      const context = yield* delegateFailure(sessionID, { prompt: "x".repeat(12_001) })
+
+      expect(requests[0]?.tools.map((tool) => tool.name)).toContain("delegate_task")
+      expect(context).toMatchObject([
+        { type: "user", text: "Delegate" },
+        {
+          type: "assistant",
+          content: [
+            {
+              type: "tool",
+              id: "call-delegate",
+              state: { status: "error", error: { message: "delegate_task prompt exceeded 12000 characters" } },
+            },
+          ],
+        },
+        { type: "assistant", finish: "stop", content: [{ type: "text", text: "Recovered" }] },
+      ])
+    }),
+  )
+
+  it.effect("V2 delegate_task rejects more than six direct children", () =>
+    Effect.gen(function* () {
+      yield* setup
+      yield* Effect.forEach(
+        Array.from({ length: 6 }, (_, index) => index),
+        (index) => insertSession(SessionV2.ID.make(`ses_child_${index}`), { parentID: sessionID, title: `child ${index}` }),
+        { discard: true },
+      )
+
+      const context = yield* delegateFailure(sessionID, {})
+
+      expect(context).toMatchObject([
+        { type: "user", text: "Delegate" },
+        {
+          type: "assistant",
+          content: [
+            {
+              type: "tool",
+              id: "call-delegate",
+              state: { status: "error", error: { message: "delegate_task exceeded max children 6" } },
+            },
+          ],
+        },
+        { type: "assistant", finish: "stop", content: [{ type: "text", text: "Recovered" }] },
+      ])
+    }),
+  )
+
+  it.effect("V2 delegate_task rejects duplicate direct child descriptions", () =>
+    Effect.gen(function* () {
+      yield* setup
+      yield* insertSession(SessionV2.ID.make("ses_duplicate_child"), {
+        parentID: sessionID,
+        title: "inspect bug (@general subagent)",
+      })
+
+      const context = yield* delegateFailure(sessionID, {})
+
+      expect(context).toMatchObject([
+        { type: "user", text: "Delegate" },
+        {
+          type: "assistant",
+          content: [
+            {
+              type: "tool",
+              id: "call-delegate",
+              state: { status: "error", error: { message: "delegate_task duplicate direct child task: inspect bug" } },
+            },
+          ],
+        },
+        { type: "assistant", finish: "stop", content: [{ type: "text", text: "Recovered" }] },
+      ])
+    }),
+  )
+
+  it.effect("V2 delegate_task rejects delegation beyond max depth", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const child = SessionV2.ID.make("ses_depth_child")
+      const grandchild = SessionV2.ID.make("ses_depth_grandchild")
+      yield* insertSession(child, { parentID: sessionID, title: "child" })
+      yield* insertSession(grandchild, { parentID: child, title: "grandchild" })
+
+      const context = yield* delegateFailure(grandchild, {})
+
+      expect(context).toMatchObject([
+        { type: "user", text: "Delegate" },
+        {
+          type: "assistant",
+          content: [
+            {
+              type: "tool",
+              id: "call-delegate",
+              state: { status: "error", error: { message: "delegate_task exceeded max depth 2" } },
+            },
+          ],
+        },
+        { type: "assistant", finish: "stop", content: [{ type: "text", text: "Recovered" }] },
+      ])
+    }),
+  )
+
+  it.effect("keeps recursive tools out of non-recursive Session requests", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      yield* delegateFailure(sessionID, { prompt: "x".repeat(12_001) })
+      const nonRecursiveID = SessionV2.ID.make("ses_non_recursive_after_delegate")
+      yield* insertSession(nonRecursiveID)
+      yield* session.prompt({ sessionID: nonRecursiveID, prompt: Prompt.make({ text: "No recursive tools" }), resume: false })
+      requests.length = 0
+      response = [
+        LLMEvent.stepStart({ index: 0 }),
+        LLMEvent.textStart({ id: "text-non-recursive" }),
+        LLMEvent.textDelta({ id: "text-non-recursive", text: "Done" }),
+        LLMEvent.textEnd({ id: "text-non-recursive" }),
+        LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+        LLMEvent.finish({ reason: "stop" }),
+      ]
+      responses = undefined
+
+      yield* session.resume(nonRecursiveID)
+
+      expect(requests[0]?.tools.map((tool) => tool.name)).not.toContain("delegate_task")
+      expect(requests[0]?.tools.map((tool) => tool.name)).not.toContain("context_search")
+    }),
+  )
+
+  it.effect("propagates unexpected local tool defects operationally", () =>
     Effect.gen(function* () {
       yield* setup
       const session = yield* SessionV2.Service
@@ -2575,20 +2750,11 @@ describe("SessionRunnerLLM", () => {
           LLMEvent.stepFinish({ index: 0, reason: "tool-calls" }),
           LLMEvent.finish({ reason: "tool-calls" }),
         ],
-        [
-          LLMEvent.stepStart({ index: 0 }),
-          LLMEvent.textStart({ id: "text-after-defect" }),
-          LLMEvent.textDelta({ id: "text-after-defect", text: "Recovered" }),
-          LLMEvent.textEnd({ id: "text-after-defect" }),
-          LLMEvent.stepFinish({ index: 0, reason: "stop" }),
-          LLMEvent.finish({ reason: "stop" }),
-        ],
       ]
 
-      yield* session.resume(sessionID)
+      expect(yield* session.resume(sessionID).pipe(Effect.catchDefect(Effect.succeed))).toBe("unexpected tool defect")
 
-      expect(requests).toHaveLength(2)
-      expect(requests[1]?.messages.map((message) => message.role)).toEqual(["user", "assistant", "tool"])
+      expect(requests).toHaveLength(1)
       expect(yield* session.context(sessionID)).toMatchObject([
         { type: "user", text: "Call defect" },
         {
@@ -2604,7 +2770,6 @@ describe("SessionRunnerLLM", () => {
             },
           ],
         },
-        { type: "assistant", finish: "stop", content: [{ type: "text", text: "Recovered" }] },
       ])
     }),
   )

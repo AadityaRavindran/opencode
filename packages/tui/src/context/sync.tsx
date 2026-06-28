@@ -568,6 +568,19 @@ export const {
           if (match.found) return store.session[match.index]
           return undefined
         },
+        remember(session: Session) {
+          const match = search(store.session, session.id, (s) => s.id)
+          if (match.found) {
+            setStore("session", match.index, reconcile(session))
+            return
+          }
+          setStore(
+            "session",
+            produce((draft) => {
+              draft.splice(match.index, 0, session)
+            }),
+          )
+        },
         query() {
           return sessionListQuery()
         },

@@ -10,7 +10,7 @@ import { StickyAccordionHeader } from "@opencode-ai/ui/sticky-accordion-header"
 import { File } from "@opencode-ai/session-ui/file"
 import { Markdown } from "@opencode-ai/session-ui/markdown"
 import { ScrollView } from "@opencode-ai/ui/scroll-view"
-import type { Message, Part, UserMessage } from "@opencode-ai/sdk/v2/client"
+import type { Message, Part, Session, UserMessage } from "@opencode-ai/sdk/v2/client"
 import { useLanguage } from "@/context/language"
 import { useProviders } from "@/hooks/use-providers"
 import { useSDK } from "@/context/sdk"
@@ -25,6 +25,25 @@ const BREAKDOWN_COLOR: Record<SessionContextBreakdownKey, string> = {
   assistant: "var(--syntax-property)",
   tool: "var(--syntax-warning)",
   other: "var(--syntax-comment)",
+}
+
+type RecursiveMode = { readonly enabled: boolean; readonly strategy?: "rlm" | "rah" | "hybrid" }
+type RecursiveSession = Session & { readonly recursive?: unknown; readonly metadata?: Record<string, unknown> }
+
+function recursiveFromUnknown(value: unknown): RecursiveMode | undefined {
+  if (typeof value !== "object" || value === null) return undefined
+  const recursive = value as Record<string, unknown>
+  if (typeof recursive.enabled !== "boolean") return undefined
+  if (recursive.strategy !== "rlm" && recursive.strategy !== "rah" && recursive.strategy !== "hybrid") {
+    return { enabled: recursive.enabled }
+  }
+  return { enabled: recursive.enabled, strategy: recursive.strategy }
+}
+
+function sessionRecursive(session: Session | undefined): RecursiveMode | undefined {
+  if (!session) return undefined
+  const current = session as RecursiveSession
+  return recursiveFromUnknown(current.recursive) ?? recursiveFromUnknown(current.metadata?.recursive)
 }
 
 function Stat(props: { label: string; value: JSX.Element }) {
@@ -173,6 +192,11 @@ export function SessionContextTab() {
     return c.modelLabel
   })
 
+  const recursiveLabel = (recursive: RecursiveMode | undefined) => {
+    if (recursive?.enabled !== true) return "Off"
+    return recursive.strategy ? `On (${recursive.strategy.toUpperCase()})` : "On"
+  }
+
   const breakdown = createMemo(
     on(
       () => [ctx()?.message.id, ctx()?.input, messages().length, systemPrompt()],
@@ -202,6 +226,7 @@ export function SessionContextTab() {
     { label: "context.stats.messages", value: () => counts().all.toLocaleString(language.intl()) },
     { label: "context.stats.provider", value: providerLabel },
     { label: "context.stats.model", value: modelLabel },
+    { label: "context.stats.recursive", value: () => recursiveLabel(sessionRecursive(info())) },
     { label: "context.stats.limit", value: () => formatter().number(ctx()?.limit) },
     { label: "context.stats.totalTokens", value: () => formatter().number(ctx()?.total) },
     { label: "context.stats.usage", value: () => formatter().percent(ctx()?.usage) },

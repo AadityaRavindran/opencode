@@ -12,6 +12,7 @@ import { SessionID } from "./session-id"
 import { Location } from "./location"
 import { SessionMessage } from "./session-message"
 import { Revert } from "./revert"
+import { SessionRecursive } from "./session-recursive"
 
 export { FileAttachment }
 
@@ -72,6 +73,16 @@ export const ModelSwitched = Event.define({
   },
 })
 export type ModelSwitched = typeof ModelSwitched.Type
+
+export const RecursiveModeChanged = Event.define({
+  type: "session.next.recursive.changed",
+  ...options,
+  schema: {
+    ...Base,
+    recursive: SessionRecursive.Info,
+  },
+})
+export type RecursiveModeChanged = typeof RecursiveModeChanged.Type
 
 export const Moved = Event.define({
   type: "session.next.moved",
@@ -372,6 +383,47 @@ export namespace Tool {
   export type Failed = typeof Failed.Type
 }
 
+export namespace Task {
+  export const Started = Event.define({
+    type: "session.next.task.started",
+    ...options,
+    schema: {
+      ...Base,
+      assistantMessageID: SessionMessage.ID,
+      callID: Schema.String,
+      taskSessionID: SessionID,
+      description: Schema.String,
+      agent: Schema.String,
+    },
+  })
+  export type Started = typeof Started.Type
+
+  export const Completed = Event.define({
+    type: "session.next.task.completed",
+    ...options,
+    schema: {
+      ...Base,
+      assistantMessageID: SessionMessage.ID,
+      callID: Schema.String,
+      taskSessionID: SessionID,
+    },
+  })
+  export type Completed = typeof Completed.Type
+
+  export const Failed = Event.define({
+    type: "session.next.task.failed",
+    ...options,
+    schema: {
+      ...Base,
+      assistantMessageID: SessionMessage.ID,
+      callID: Schema.String,
+      taskSessionID: SessionID,
+      error: UnknownError,
+    },
+  })
+  export type Failed = typeof Failed.Type
+}
+
 export const RetryError = Schema.Struct({
   message: Schema.String,
   statusCode: Schema.Finite.pipe(optional),
@@ -448,6 +500,7 @@ export namespace RevertEvent {
 export const DurableDefinitions = Event.inventory(
   AgentSwitched,
   ModelSwitched,
+  RecursiveModeChanged,
   Moved,
   Prompted,
   PromptAdmitted,
@@ -466,6 +519,9 @@ export const DurableDefinitions = Event.inventory(
   Tool.Progress,
   Tool.Success,
   Tool.Failed,
+  Task.Started,
+  Task.Completed,
+  Task.Failed,
   Reasoning.Started,
   Reasoning.Ended,
   Retried,
@@ -479,6 +535,7 @@ export const DurableDefinitions = Event.inventory(
 export const Definitions = Event.inventory(
   AgentSwitched,
   ModelSwitched,
+  RecursiveModeChanged,
   Moved,
   Prompted,
   PromptAdmitted,
@@ -502,6 +559,9 @@ export const Definitions = Event.inventory(
   Tool.Progress,
   Tool.Success,
   Tool.Failed,
+  Task.Started,
+  Task.Completed,
+  Task.Failed,
   Retried,
   Compaction.Started,
   Compaction.Delta,

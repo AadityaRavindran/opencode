@@ -1,4 +1,4 @@
-import { DateTime } from "effect"
+import { DateTime, Option, Schema } from "effect"
 import { AgentV2 } from "../agent"
 import { Location } from "../location"
 import { ModelV2 } from "../model"
@@ -10,6 +10,16 @@ import { SessionSchema } from "./schema"
 import { SessionTable } from "./sql"
 import { SessionMessage } from "./message"
 import { Snapshot } from "../snapshot"
+import { SessionRecursive } from "@opencode-ai/schema/session-recursive"
+import { fromV1Ruleset } from "../permission/legacy"
+
+const decodeRecursive = Schema.decodeUnknownOption(SessionRecursive.Info)
+
+function recursive(row: typeof SessionTable.$inferSelect) {
+  const value = row.metadata?.recursive
+  if (value === undefined) return undefined
+  return Option.getOrUndefined(decodeRecursive(value))
+}
 
 export function fromRow(row: typeof SessionTable.$inferSelect): SessionSchema.Info {
   return SessionSchema.Info.make({
@@ -41,6 +51,8 @@ export function fromRow(row: typeof SessionTable.$inferSelect): SessionSchema.In
     }),
     subpath: row.path ? RelativePath.make(row.path) : undefined,
     revert: row.revert ? { ...row.revert, messageID: SessionMessage.ID.make(row.revert.messageID) } : undefined,
+    recursive: recursive(row),
+    permission: fromV1Ruleset(row.permission ?? undefined),
     time: {
       created: DateTime.makeUnsafe(row.time_created),
       updated: DateTime.makeUnsafe(row.time_updated),

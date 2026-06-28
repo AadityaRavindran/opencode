@@ -21,7 +21,10 @@ export type ExecuteInput = {
 }
 
 export interface Interface {
-  readonly materialize: (permissions?: PermissionV2.Ruleset) => Effect.Effect<Materialization>
+  readonly materialize: (
+    permissions?: PermissionV2.Ruleset,
+    tools?: Readonly<Record<string, AnyTool>>,
+  ) => Effect.Effect<Materialization>
   /** Internal registration capability exposed publicly only through Tools.Service. */
   readonly register: (tools: Readonly<Record<string, AnyTool>>) => Effect.Effect<void, RegistrationError, Scope.Scope>
 }
@@ -47,18 +50,10 @@ const registryLayer = Layer.effect(
     type Registration = { readonly identity: object; readonly tool: AnyTool }
     const local = new Map<string, Array<{ readonly token: object; readonly registration: Registration }>>()
 
-    const settleWith = Effect.fn("ToolRegistry.settle")(function* (input: ExecuteInput, advertised?: object) {
-      const registration =
-        local.get(input.call.name)?.at(-1)?.registration ?? applications.entries().get(input.call.name)
-      if (!registration)
-        return {
-          result: {
-            type: "error" as const,
-            value: advertised ? `Stale tool call: ${input.call.name}` : `Unknown tool: ${input.call.name}`,
-          },
-        }
-      if (advertised && registration.identity !== advertised)
-        return { result: { type: "error" as const, value: `Stale tool call: ${input.call.name}` } }
+    const settleRegistration = Effect.fn("ToolRegistry.settleRegistration")(function* (
+      input: ExecuteInput,
+      registration: Registration,
+    ) {
       const pending = yield* settle(registration.tool, input.call, {
         sessionID: input.sessionID,
         agent: input.agent,
@@ -79,6 +74,20 @@ const registryLayer = Layer.effect(
       return bounded.outputPaths.length > 0
         ? { result, output: bounded.output, outputPaths: bounded.outputPaths }
         : { result, output: bounded.output }
+    })
+
+    const settleWith = Effect.fn("ToolRegistry.settle")(function* (input: ExecuteInput, advertised?: object) {
+      const registration = local.get(input.call.name)?.at(-1)?.registration ?? applications.entries().get(input.call.name)
+      if (!registration)
+        return {
+          result: {
+            type: "error" as const,
+            value: advertised ? `Stale tool call: ${input.call.name}` : `Unknown tool: ${input.call.name}`,
+          },
+        }
+      if (advertised && registration.identity !== advertised)
+        return { result: { type: "error" as const, value: `Stale tool call: ${input.call.name}` } }
+      return yield* settleRegistration(input, registration)
     })
 
     return Service.of({
@@ -103,18 +112,21 @@ const registryLayer = Layer.effect(
           }),
         )
       }),
-      materialize: Effect.fn("ToolRegistry.materialize")(function* (permissions = []) {
+      materialize: Effect.fn("ToolRegistry.materialize")(function* (permissions = [], tools = {}) {
         const registrations = new Map(applications.entries())
+        const requestLocal = new Set(Object.keys(tools))
         for (const [name, entries] of local) {
           const registration = entries.at(-1)?.registration
           if (registration) registrations.set(name, registration)
         }
+        for (const [name, tool] of Object.entries(tools)) registrations.set(name, { identity: {}, tool })
         for (const [name, registration] of registrations)
           if (whollyDisabled(permission(registration.tool, name), permissions)) registrations.delete(name)
         return {
           definitions: Array.from(registrations, ([name, registration]) => definition(name, registration.tool)),
           settle: (input) => {
             const registration = registrations.get(input.call.name)
+            if (registration && requestLocal.has(input.call.name)) return settleRegistration(input, registration)
             if (registration) return settleWith(input, registration.identity)
             return Effect.succeed({ result: { type: "error", value: `Unknown tool: ${input.call.name}` } })
           },

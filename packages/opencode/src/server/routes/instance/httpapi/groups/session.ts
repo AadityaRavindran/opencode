@@ -25,6 +25,7 @@ import { described } from "./metadata"
 import { QueryBoolean } from "./query"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
+import { SessionRecursive } from "@opencode-ai/schema/session-recursive"
 
 const root = "/session"
 export const ListQuery = Schema.Struct({
@@ -67,6 +68,7 @@ export const SummarizePayload = Schema.Struct({
   modelID: ModelV2.ID,
   auto: Schema.optional(Schema.Boolean),
 })
+export const RecursivePayload = SessionRecursive.Info
 export const PromptPayload = Schema.Struct(Struct.omit(SessionPrompt.PromptInput.fields, ["sessionID"]))
 export const CommandPayload = Schema.Struct(Struct.omit(SessionPrompt.CommandInput.fields, ["sessionID"]))
 export const ShellPayload = Schema.Struct(Struct.omit(SessionPrompt.ShellInput.fields, ["sessionID"]))
@@ -92,6 +94,7 @@ export const SessionPaths = {
   share: `${root}/:sessionID/share`,
   init: `${root}/:sessionID/init`,
   summarize: `${root}/:sessionID/summarize`,
+  recursive: `${root}/:sessionID/recursive`,
   prompt: `${root}/:sessionID/message`,
   promptAsync: `${root}/:sessionID/prompt_async`,
   command: `${root}/:sessionID/command`,
@@ -311,6 +314,19 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.summarize",
             summary: "Summarize session",
             description: "Generate a concise summary of the session using AI compaction to preserve key information.",
+          }),
+        ),
+        HttpApiEndpoint.post("recursive", SessionPaths.recursive, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          payload: RecursivePayload,
+          success: described(Session.Info, "Updated session"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.recursive",
+            summary: "Set recursive mode",
+            description: "Enable or disable recursive execution mode for subsequent prompts in a session.",
           }),
         ),
         HttpApiEndpoint.post("prompt", SessionPaths.prompt, {

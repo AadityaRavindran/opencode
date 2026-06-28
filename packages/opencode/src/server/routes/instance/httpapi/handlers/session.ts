@@ -31,6 +31,7 @@ import {
   MessagesQuery,
   PermissionResponsePayload,
   PromptPayload,
+  RecursivePayload,
   RevertPayload,
   ShellPayload,
   SummarizePayload,
@@ -292,6 +293,18 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       return true
     })
 
+    const recursive = Effect.fn("SessionHttpApi.recursive")(function* (ctx: {
+      params: { sessionID: SessionID }
+      payload: typeof RecursivePayload.Type
+    }) {
+      const current = yield* requireSession(ctx.params.sessionID)
+      yield* session.setMetadata({
+        sessionID: ctx.params.sessionID,
+        metadata: { ...(current.metadata ?? {}), recursive: ctx.payload },
+      })
+      return yield* requireSession(ctx.params.sessionID)
+    })
+
     const prompt = Effect.fn("SessionHttpApi.prompt")(function* (ctx: {
       params: { sessionID: SessionID }
       payload: typeof PromptPayload.Type
@@ -428,6 +441,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("share", share)
       .handle("unshare", unshare)
       .handle("summarize", summarize)
+      .handle("recursive", recursive)
       .handle("prompt", prompt)
       .handle("promptAsync", promptAsync)
       .handle("command", command)

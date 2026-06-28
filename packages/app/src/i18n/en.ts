@@ -467,6 +467,7 @@ export const dict = {
   "context.stats.messages": "Messages",
   "context.stats.provider": "Provider",
   "context.stats.model": "Model",
+  "context.stats.recursive": "Recursive",
   "context.stats.limit": "Context Limit",
   "context.stats.totalTokens": "Total Tokens",
   "context.stats.usage": "Usage",

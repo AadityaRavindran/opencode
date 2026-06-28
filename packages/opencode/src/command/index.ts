@@ -86,7 +86,6 @@ const layer = Layer.effect(
         subtask: true,
         hints: hints(PROMPT_REVIEW),
       }
-
       for (const [name, command] of Object.entries(cfg.command ?? {})) {
         commands[name] = {
           name,

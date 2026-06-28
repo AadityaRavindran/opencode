@@ -10,7 +10,7 @@ import { Agent } from "../agent/agent"
 import { deriveSubagentSessionPermission } from "../agent/subagent-permissions"
 import type { SessionPrompt } from "../session/prompt"
 import { Config } from "@/config/config"
-import { Effect, Exit, Schema, Scope } from "effect"
+import { Duration, Effect, Exit, Schema, Scope } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Database } from "@opencode-ai/core/database/database"
@@ -39,6 +39,10 @@ const BACKGROUND_UPDATED = [
   "DO NOT sleep, poll for progress, ask the task for status, or duplicate this task's work — avoid working with the same files or topics it is using.",
   "Work on non-overlapping tasks, or briefly tell the user what you sent and end your response.",
 ].join("\n")
+const RAH_MAX_DEPTH = 2
+const RAH_MAX_CHILDREN = 6
+const RAH_MAX_PROMPT_CHARS = 12_000
+const RAH_TASK_TIMEOUT = Duration.minutes(30)
 
 const BaseParameterFields = {
   description: Schema.String.annotate({ description: "A short (3-5 words) description of the task" }),
@@ -78,6 +82,11 @@ function renderOutput(input: {
   ].join("\n")
 }
 
+function usesRecursiveAgentHarness(session: Session.Info) {
+  if (session.recursive?.enabled !== true) return false
+  return session.recursive.strategy !== "rlm"
+}
+
 export const TaskTool = Tool.define(
   id,
   Effect.gen(function* () {
@@ -88,6 +97,14 @@ export const TaskTool = Tool.define(
     const scope = yield* Scope.Scope
     const flags = yield* RuntimeFlags.Service
     const database = yield* Database.Service
+
+    const recursiveDepth = (session: Session.Info): Effect.Effect<number> =>
+      Effect.gen(function* () {
+        if (!session.parentID) return 0
+        const parent = yield* sessions.get(session.parentID).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+        if (!parent) return 0
+        return 1 + (yield* recursiveDepth(parent))
+      })
 
     const run = Effect.fn("TaskTool.execute")(function* (
       params: Schema.Schema.Type<typeof Parameters>,
@@ -122,6 +139,21 @@ export const TaskTool = Tool.define(
         ? yield* sessions.get(SessionID.make(params.task_id)).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
         : undefined
       const parent = yield* sessions.get(ctx.sessionID)
+      const rah = usesRecursiveAgentHarness(parent)
+      if (rah && runInBackground)
+        return yield* Effect.fail(new Error("RAH task delegation does not allow background=true"))
+      if (rah && !session) {
+        if (params.prompt.length > RAH_MAX_PROMPT_CHARS)
+          return yield* Effect.fail(new Error(`RAH task delegation prompt exceeded ${RAH_MAX_PROMPT_CHARS} characters`))
+        const depth = yield* recursiveDepth(parent)
+        if (depth >= RAH_MAX_DEPTH)
+          return yield* Effect.fail(new Error(`RAH task delegation exceeded max depth ${RAH_MAX_DEPTH}`))
+        const children = yield* sessions.children(parent.id)
+        if (children.length >= RAH_MAX_CHILDREN)
+          return yield* Effect.fail(new Error(`RAH task delegation exceeded max children ${RAH_MAX_CHILDREN}`))
+        if (children.some((child) => child.title.startsWith(`${params.description} (`)))
+          return yield* Effect.fail(new Error(`RAH task delegation duplicate direct child task: ${params.description}`))
+      }
       const childPermission = deriveSubagentSessionPermission({
         parentSessionPermission: parent.permission ?? [],
         subagent: next,
@@ -295,6 +327,7 @@ export const TaskTool = Tool.define(
 
       const runCancel = yield* EffectBridge.make()
       const cancel = ops.cancel(nextSession.id)
+      const cancelTask = Effect.all([cancel, background.cancel(nextSession.id)], { discard: true })
 
       function onAbort() {
         runCancel.fork(cancel)
@@ -306,13 +339,28 @@ export const TaskTool = Tool.define(
         }),
         () =>
           Effect.gen(function* () {
-            const result = yield* Effect.raceFirst(
+            const wait = Effect.raceFirst(
               background.wait({ id: nextSession.id }).pipe(Effect.map((waited) => waited.info)),
               background.waitForPromotion(nextSession.id),
             )
+            const result = yield* (rah
+              ? wait.pipe(
+                  Effect.timeoutOrElse({
+                    duration: RAH_TASK_TIMEOUT,
+                    orElse: () =>
+                      cancelTask.pipe(Effect.andThen(Effect.fail(new Error("RAH task delegation timed out after 30 minutes")))),
+                  }),
+                )
+              : wait)
             if (result?.metadata?.background === true) return backgroundResult()
-            if (result?.status === "error") return yield* Effect.fail(new Error(result.error ?? "Task failed"))
-            if (result?.status === "cancelled") return yield* Effect.fail(new Error("Task cancelled"))
+            if (result?.status === "error") {
+              if (rah) yield* cancelTask
+              return yield* Effect.fail(new Error(result.error ?? "Task failed"))
+            }
+            if (result?.status === "cancelled") {
+              if (rah) yield* cancelTask
+              return yield* Effect.fail(new Error("Task cancelled"))
+            }
             return {
               title: params.description,
               metadata,
@@ -321,8 +369,7 @@ export const TaskTool = Tool.define(
           }),
         (_, exit) =>
           Effect.gen(function* () {
-            if (Exit.hasInterrupts(exit))
-              yield* Effect.all([cancel, background.cancel(nextSession.id)], { discard: true })
+            if (Exit.hasInterrupts(exit)) yield* cancelTask
           }).pipe(
             Effect.ensuring(
               Effect.sync(() => {

@@ -5,15 +5,19 @@ import { Agent } from "./agent"
 import { Location } from "./location"
 import { Model } from "./model"
 import { Project } from "./project"
+import { Permission } from "./permission"
 import { DateTimeUtcFromMillis, optional, RelativePath } from "./schema"
 import { SessionEvent } from "./session-event"
 import { SessionID } from "./session-id"
 import { Revert } from "./revert"
+import { SessionRecursive } from "./session-recursive"
 
 export const ID = SessionID
 export type ID = SessionID
 
 export const Event = SessionEvent
+export const Recursive = SessionRecursive.Info
+export type Recursive = SessionRecursive.Info
 
 export interface Info extends Schema.Schema.Type<typeof Info> {}
 export const Info = Schema.Struct({
@@ -41,6 +45,8 @@ export const Info = Schema.Struct({
   location: Location.Ref,
   subpath: RelativePath.pipe(optional),
   revert: Revert.State.pipe(optional),
+  recursive: Recursive.pipe(optional),
+  permission: Schema.Array(Permission.Rule).pipe(optional),
 }).annotate({ identifier: "SessionV2.Info" })
 
 export const ListAnchor = Schema.Struct({

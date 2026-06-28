@@ -120,6 +120,42 @@ Repeated compactions update the previous structured summary with newly compacted
 
 When a provider rejects a request as context overflow before durable assistant output or tool execution, the runner attempts one overflow-triggered compaction even when the local estimate did not predict pressure. A completed checkpoint rebuilds the same logical provider turn with one remaining physical attempt. A second overflow, unavailable compaction, or overflow after durable output becomes the ordinary terminal failure; recovery never loops or replays partial side effects. Deterministic old tool-result pruning remains a separate follow-up.
 
+## Recursive Mode
+
+Recursive mode is stored in Session metadata and projected onto `Session.Info.recursive`. It is changed by `/recursive on [rlm|rah|hybrid]`, `/recursive off`, or the `session.recursive` API. The setting is per-Session and affects provider turns after it is enabled.
+
+`rlm` mode treats recent projected history as the active working set and registers `context_search`, `context_read`, and `context_recent` tools over a bounded compact index of older projected history. The runner sends only the most recent bounded messages to the provider and instructs the model to query older external context before answering questions about earlier work. The bounded index intentionally avoids retaining full historical message objects in tool closures for long-running Sessions.
+
+`rah` mode keeps normal visible history and adds Recursive Agent Harness instructions. In the legacy/TUI runtime it uses the existing `task` tool as the execution backend: each delegated task creates a child Session, inherits parent deny/external-directory permission constraints, runs a selected subagent, and returns the child result as parent tool output. In the native V2 runner it registers `delegate_task` dynamically for `rah` and `hybrid` turns. `delegate_task` creates a child Session, admits one prompt, drains the child Session foreground through the same local runner, and returns the child assistant result as parent tool output. RAH task delegation enforces max depth 2, max 6 direct child tasks per parent Session, max prompt size 12000 characters, duplicate direct-child description rejection, a 30 minute foreground timeout, and no background subtasks.
+
+Core V2 Session projection exposes converted per-Session permission rules from the legacy storage column. `delegate_task` preserves parent deny and external-directory rules, adds default `todowrite` and `delegate_task` denies unless the selected child agent explicitly configures those actions, and stores the converted rules on the child Session. Permission evaluation merges selected-agent rules first and Session rules last so inherited denies win.
+
+`hybrid` combines RLM context lookup with RAH decomposition guidance.
+
+The V1/TUI prompt path currently does not register older-history lookup tools, so it must not trim model-visible history for `rlm` or `hybrid`. It only adds recursive guidance until that runtime has an actual retrieval boundary.
+
+### RAH Architecture Status
+
+Current implemented legacy/TUI RAH uses existing primitives:
+
+- durable child Sessions via the `task` tool
+- parent-child links through `Session.parentID`
+- child result aggregation as parent tool output
+- inherited parent deny and external-directory permission constraints
+- subagent-specific permission rules and default task/todo denials
+- cancellation of foreground child work when the parent task call is interrupted
+- hard fanout limits: depth 2, 6 direct child Sessions, no background subtasks
+
+Full Core V2 RAH still needs these pieces before it matches or exceeds the legacy task-backed runtime:
+
+- durable child task status events in the `session.next.*` event family
+- task-tree replay over `sessions.events(...)`
+- cancellation of a task subtree from parent Session interruption
+- per-subtree token, cost, tool-call, and wall-clock budgets
+- loop detection for repeated equivalent subtasks or repeated no-progress results
+- full UI surfaces for active child Sessions, task results, failures, and subtree cancellation; the TUI sidebar currently exposes only a direct child task count
+- crash reconciliation for child work that was running when the process stopped
+
 ## V1 Runtime Context Parity
 
 This is the canonical checklist for model-visible runtime context still needed before the V2 runner replaces V1. Keep each behavior in its owning boundary rather than treating all model-visible text as a durable Context Source. Update this table in the PR that changes a status.

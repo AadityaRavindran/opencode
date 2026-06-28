@@ -3,7 +3,7 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
-import { Deferred, Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
 import { Agent } from "../../src/agent/agent"
 import { BackgroundJob } from "@/background/job"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -66,13 +66,12 @@ function defer<T>() {
   return { promise, resolve }
 }
 
-const seed = Effect.fn("TaskToolTest.seed")(function* (title = "Pinned") {
+const assistantFor = Effect.fn("TaskToolTest.assistantFor")(function* (sessionID: SessionID) {
   const session = yield* Session.Service
-  const chat = yield* session.create({ title })
   const user = yield* session.updateMessage({
     id: MessageID.ascending(),
     role: "user",
-    sessionID: chat.id,
+    sessionID,
     agent: "build",
     model: ref,
     time: { created: Date.now() },
@@ -81,7 +80,7 @@ const seed = Effect.fn("TaskToolTest.seed")(function* (title = "Pinned") {
     id: MessageID.ascending(),
     role: "assistant",
     parentID: user.id,
-    sessionID: chat.id,
+    sessionID,
     mode: "build",
     agent: "build",
     cost: 0,
@@ -93,6 +92,13 @@ const seed = Effect.fn("TaskToolTest.seed")(function* (title = "Pinned") {
     time: { created: Date.now() },
   }
   yield* session.updateMessage(assistant)
+  return assistant
+})
+
+const seed = Effect.fn("TaskToolTest.seed")(function* (title = "Pinned") {
+  const session = yield* Session.Service
+  const chat = yield* session.create({ title })
+  const assistant = yield* assistantFor(chat.id)
   return { chat, assistant }
 })
 
@@ -106,6 +112,35 @@ function stubOps(opts?: { onPrompt?: (input: SessionPrompt.PromptInput) => void;
         return reply(input, opts?.text ?? "done")
       }),
   }
+}
+
+const enableRah = Effect.fn("TaskToolTest.enableRah")(function* (sessionID: SessionID) {
+  const session = yield* Session.Service
+  yield* session.setMetadata({ sessionID, metadata: { recursive: { enabled: true, strategy: "rah" } } })
+})
+
+function taskContext(input: {
+  chat: Session.Info
+  assistant: SessionV1.Assistant
+  promptOps?: TaskPromptOps
+  abort?: AbortSignal
+}) {
+  return {
+    sessionID: input.chat.id,
+    messageID: input.assistant.id,
+    agent: "build",
+    abort: input.abort ?? new AbortController().signal,
+    extra: { promptOps: input.promptOps ?? stubOps() },
+    messages: [],
+    metadata: () => Effect.void,
+    ask: () => Effect.void,
+  }
+}
+
+function failureMessage(exit: Exit.Exit<unknown>) {
+  if (Exit.isSuccess(exit)) return ""
+  const failure = Cause.squash(exit.cause)
+  return failure instanceof Error ? failure.message : String(failure)
 }
 
 function reply(input: SessionPrompt.PromptInput, text: string): SessionV1.WithParts {
@@ -484,6 +519,129 @@ describe("tool.task", () => {
         .pipe(Effect.exit)
 
       expect(Exit.isFailure(exit)).toBe(true)
+    }),
+  )
+
+  background.instance("RAH rejects background task delegation", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      yield* enableRah(chat.id)
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+            background: true,
+          },
+          taskContext({ chat, assistant }),
+        )
+        .pipe(Effect.exit)
+
+      expect(failureMessage(exit)).toContain("RAH task delegation does not allow background=true")
+    }),
+  )
+
+  it.instance("RAH rejects oversized task prompts", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      yield* enableRah(chat.id)
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "x".repeat(12_001),
+            subagent_type: "general",
+          },
+          taskContext({ chat, assistant }),
+        )
+        .pipe(Effect.exit)
+
+      expect(failureMessage(exit)).toContain("RAH task delegation prompt exceeded 12000 characters")
+    }),
+  )
+
+  it.instance("RAH rejects delegation beyond max depth", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat } = yield* seed()
+      const child = yield* sessions.create({ parentID: chat.id, title: "child" })
+      const grandchild = yield* sessions.create({ parentID: child.id, title: "grandchild" })
+      yield* enableRah(grandchild.id)
+      const assistant = yield* assistantFor(grandchild.id)
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+          },
+          taskContext({ chat: grandchild, assistant }),
+        )
+        .pipe(Effect.exit)
+
+      expect(failureMessage(exit)).toContain("RAH task delegation exceeded max depth 2")
+    }),
+  )
+
+  it.instance("RAH rejects more than six direct child tasks", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      yield* enableRah(chat.id)
+      yield* Effect.forEach(
+        Array.from({ length: 6 }, (_, index) => index),
+        (index) => sessions.create({ parentID: chat.id, title: `child ${index}` }),
+        { discard: true },
+      )
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+          },
+          taskContext({ chat, assistant }),
+        )
+        .pipe(Effect.exit)
+
+      expect(failureMessage(exit)).toContain("RAH task delegation exceeded max children 6")
+    }),
+  )
+
+  it.instance("RAH rejects duplicate direct child task descriptions", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      yield* enableRah(chat.id)
+      yield* sessions.create({ parentID: chat.id, title: "inspect bug (@general subagent)" })
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+          },
+          taskContext({ chat, assistant }),
+        )
+        .pipe(Effect.exit)
+
+      expect(failureMessage(exit)).toContain("RAH task delegation duplicate direct child task: inspect bug")
     }),
   )
 
