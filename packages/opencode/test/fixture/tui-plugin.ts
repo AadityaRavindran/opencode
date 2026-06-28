@@ -98,6 +98,8 @@ type Opts = {
     ready?: HostPluginApi["state"]["ready"]
     config?: HostPluginApi["state"]["config"]
     provider?: HostPluginApi["state"]["provider"]
+    model?: HostPluginApi["state"]["model"]
+    chatgpt?: HostPluginApi["state"]["chatgpt"]
     path?: HostPluginApi["state"]["path"]
     vcs?: HostPluginApi["state"]["vcs"]
     session?: Partial<HostPluginApi["state"]["session"]>
@@ -306,6 +308,12 @@ export function createTuiPluginApi(opts: Opts = {}): HostPluginApi {
       get provider() {
         return opts.state?.provider ?? []
       },
+      get model() {
+        return opts.state?.model
+      },
+      get chatgpt() {
+        return opts.state?.chatgpt
+      },
       get path() {
         return opts.state?.path ?? { home: "", state: "", config: "", worktree: "", directory: "" }
       },
@@ -314,6 +322,7 @@ export function createTuiPluginApi(opts: Opts = {}): HostPluginApi {
       },
       session: {
         count: opts.state?.session?.count ?? (() => 0),
+        list: opts.state?.session?.list ?? (() => []),
         get: opts.state?.session?.get ?? (() => undefined),
         diff: opts.state?.session?.diff ?? (() => []),
         todo: opts.state?.session?.todo ?? (() => []),

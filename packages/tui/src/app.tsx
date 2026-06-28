@@ -397,6 +397,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
       event,
       sdk,
       sync,
+      local,
       theme: themeState,
       toast,
       renderer,

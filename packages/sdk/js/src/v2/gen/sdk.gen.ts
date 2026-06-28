@@ -31,6 +31,8 @@ import type {
   EventTuiToastShow,
   ExperimentalCapabilitiesGetErrors,
   ExperimentalCapabilitiesGetResponses,
+  ExperimentalChatgptUsageErrors,
+  ExperimentalChatgptUsageResponses,
   ExperimentalConsoleGetErrors,
   ExperimentalConsoleGetResponses,
   ExperimentalConsoleListOrgsErrors,
@@ -205,6 +207,9 @@ import type {
   SessionPromptAsyncResponses,
   SessionPromptErrors,
   SessionPromptResponses,
+  SessionRecursiveErrors,
+  SessionRecursiveInfo,
+  SessionRecursiveResponses,
   SessionRevertErrors,
   SessionRevertResponses,
   SessionShareErrors,
@@ -371,6 +376,8 @@ import type {
   V2SessionQuestionRejectResponses,
   V2SessionQuestionReplyErrors,
   V2SessionQuestionReplyResponses,
+  V2SessionRecursiveErrors,
+  V2SessionRecursiveResponses,
   V2SessionRevertClearErrors,
   V2SessionRevertClearResponses,
   V2SessionRevertCommitErrors,
@@ -798,6 +805,42 @@ export class Console extends HeyApiClient {
         ...options?.headers,
         ...params.headers,
       },
+    })
+  }
+}
+
+export class Chatgpt extends HeyApiClient {
+  /**
+   * Get ChatGPT usage limits
+   *
+   * Get ChatGPT plan usage windows for the current OpenAI OAuth account.
+   */
+  public usage<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      ExperimentalChatgptUsageResponses,
+      ExperimentalChatgptUsageErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/chatgpt/usage",
+      ...options,
+      ...params,
     })
   }
 }
@@ -1254,6 +1297,11 @@ export class Experimental extends HeyApiClient {
   private _console?: Console
   get console(): Console {
     return (this._console ??= new Console({ client: this.client }))
+  }
+
+  private _chatgpt?: Chatgpt
+  get chatgpt(): Chatgpt {
+    return (this._chatgpt ??= new Chatgpt({ client: this.client }))
   }
 
   private _session?: Session
@@ -4088,6 +4136,45 @@ export class Session2 extends HeyApiClient {
   }
 
   /**
+   * Set recursive mode
+   *
+   * Enable or disable recursive execution mode for subsequent prompts in a session.
+   */
+  public recursive<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+      sessionRecursiveInfo?: SessionRecursiveInfo
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "sessionRecursiveInfo", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SessionRecursiveResponses, SessionRecursiveErrors, ThrowOnError>({
+      url: "/session/{sessionID}/recursive",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
    * Send async message
    *
    * Create and send a new message to a session asynchronously, starting the session if needed and returning immediately.
@@ -5604,6 +5691,41 @@ export class Session3 extends HeyApiClient {
       ThrowOnError
     >({
       url: "/api/session/{sessionID}/model",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Set recursive mode
+   *
+   * Enable or disable recursive execution mode for subsequent prompts in a session.
+   */
+  public recursive<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      sessionRecursiveInfo: SessionRecursiveInfo
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { key: "sessionRecursiveInfo", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<V2SessionRecursiveResponses, V2SessionRecursiveErrors, ThrowOnError>({
+      url: "/api/session/{sessionID}/recursive",
       ...options,
       ...params,
       headers: {

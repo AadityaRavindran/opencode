@@ -262,6 +262,12 @@ export type SessionsListOutput = {
         readonly patch: string
       }>
     }
+    readonly recursive?: { readonly enabled: boolean; readonly strategy?: "rlm" | "rah" | "hybrid" }
+    readonly permission?: ReadonlyArray<{
+      readonly action: string
+      readonly resource: string
+      readonly effect: "allow" | "deny" | "ask"
+    }>
   }>
   readonly cursor: { readonly previous?: string | null; readonly next?: string | null }
 }
@@ -324,6 +330,12 @@ export type SessionsCreateOutput = {
         readonly patch: string
       }>
     }
+    readonly recursive?: { readonly enabled: boolean; readonly strategy?: "rlm" | "rah" | "hybrid" }
+    readonly permission?: ReadonlyArray<{
+      readonly action: string
+      readonly resource: string
+      readonly effect: "allow" | "deny" | "ask"
+    }>
   }
 }["data"]
 
@@ -362,6 +374,12 @@ export type SessionsGetOutput = {
         readonly patch: string
       }>
     }
+    readonly recursive?: { readonly enabled: boolean; readonly strategy?: "rlm" | "rah" | "hybrid" }
+    readonly permission?: ReadonlyArray<{
+      readonly action: string
+      readonly resource: string
+      readonly effect: "allow" | "deny" | "ask"
+    }>
   }
 }["data"]
 
@@ -380,6 +398,14 @@ export type SessionsSwitchModelInput = {
 }
 
 export type SessionsSwitchModelOutput = void
+
+export type SessionsRecursiveInput = {
+  readonly sessionID: { readonly sessionID: string }["sessionID"]
+  readonly enabled: { readonly enabled: boolean; readonly strategy?: "rlm" | "rah" | "hybrid" }["enabled"]
+  readonly strategy?: { readonly enabled: boolean; readonly strategy?: "rlm" | "rah" | "hybrid" }["strategy"]
+}
+
+export type SessionsRecursiveOutput = void
 
 export type SessionsPromptInput = {
   readonly sessionID: { readonly sessionID: string }["sessionID"]
@@ -713,6 +739,18 @@ export type SessionsHistoryOutput = {
     | {
         readonly id: string
         readonly metadata?: { readonly [x: string]: JsonValue }
+        readonly type: "session.next.recursive.changed"
+        readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+        readonly location?: { readonly directory: string; readonly workspaceID?: string }
+        readonly data: {
+          readonly timestamp: number
+          readonly sessionID: string
+          readonly recursive: { readonly enabled: boolean; readonly strategy?: "rlm" | "rah" | "hybrid" }
+        }
+      }
+    | {
+        readonly id: string
+        readonly metadata?: { readonly [x: string]: JsonValue }
         readonly type: "session.next.moved"
         readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
         readonly location?: { readonly directory: string; readonly workspaceID?: string }
@@ -1018,6 +1056,51 @@ export type SessionsHistoryOutput = {
     | {
         readonly id: string
         readonly metadata?: { readonly [x: string]: JsonValue }
+        readonly type: "session.next.task.started"
+        readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+        readonly location?: { readonly directory: string; readonly workspaceID?: string }
+        readonly data: {
+          readonly timestamp: number
+          readonly sessionID: string
+          readonly assistantMessageID: string
+          readonly callID: string
+          readonly taskSessionID: string
+          readonly description: string
+          readonly agent: string
+        }
+      }
+    | {
+        readonly id: string
+        readonly metadata?: { readonly [x: string]: JsonValue }
+        readonly type: "session.next.task.completed"
+        readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+        readonly location?: { readonly directory: string; readonly workspaceID?: string }
+        readonly data: {
+          readonly timestamp: number
+          readonly sessionID: string
+          readonly assistantMessageID: string
+          readonly callID: string
+          readonly taskSessionID: string
+        }
+      }
+    | {
+        readonly id: string
+        readonly metadata?: { readonly [x: string]: JsonValue }
+        readonly type: "session.next.task.failed"
+        readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+        readonly location?: { readonly directory: string; readonly workspaceID?: string }
+        readonly data: {
+          readonly timestamp: number
+          readonly sessionID: string
+          readonly assistantMessageID: string
+          readonly callID: string
+          readonly taskSessionID: string
+          readonly error: { readonly type: "unknown"; readonly message: string }
+        }
+      }
+    | {
+        readonly id: string
+        readonly metadata?: { readonly [x: string]: JsonValue }
         readonly type: "session.next.reasoning.started"
         readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
         readonly location?: { readonly directory: string; readonly workspaceID?: string }
@@ -1166,6 +1249,18 @@ export type SessionsEventsOutput =
         readonly sessionID: string
         readonly messageID: string
         readonly model: { readonly id: string; readonly providerID: string; readonly variant?: string }
+      }
+    }
+  | {
+      readonly id: string
+      readonly metadata?: { readonly [x: string]: unknown }
+      readonly type: "session.next.recursive.changed"
+      readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+      readonly location?: { readonly directory: string; readonly workspaceID?: string }
+      readonly data: {
+        readonly timestamp: number
+        readonly sessionID: string
+        readonly recursive: { readonly enabled: boolean; readonly strategy?: "rlm" | "rah" | "hybrid" }
       }
     }
   | {
@@ -1471,6 +1566,51 @@ export type SessionsEventsOutput =
           readonly executed: boolean
           readonly metadata?: { readonly [x: string]: { readonly [x: string]: unknown } }
         }
+      }
+    }
+  | {
+      readonly id: string
+      readonly metadata?: { readonly [x: string]: unknown }
+      readonly type: "session.next.task.started"
+      readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+      readonly location?: { readonly directory: string; readonly workspaceID?: string }
+      readonly data: {
+        readonly timestamp: number
+        readonly sessionID: string
+        readonly assistantMessageID: string
+        readonly callID: string
+        readonly taskSessionID: string
+        readonly description: string
+        readonly agent: string
+      }
+    }
+  | {
+      readonly id: string
+      readonly metadata?: { readonly [x: string]: unknown }
+      readonly type: "session.next.task.completed"
+      readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+      readonly location?: { readonly directory: string; readonly workspaceID?: string }
+      readonly data: {
+        readonly timestamp: number
+        readonly sessionID: string
+        readonly assistantMessageID: string
+        readonly callID: string
+        readonly taskSessionID: string
+      }
+    }
+  | {
+      readonly id: string
+      readonly metadata?: { readonly [x: string]: unknown }
+      readonly type: "session.next.task.failed"
+      readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+      readonly location?: { readonly directory: string; readonly workspaceID?: string }
+      readonly data: {
+        readonly timestamp: number
+        readonly sessionID: string
+        readonly assistantMessageID: string
+        readonly callID: string
+        readonly taskSessionID: string
+        readonly error: { readonly type: "unknown"; readonly message: string }
       }
     }
   | {

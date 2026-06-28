@@ -18,6 +18,7 @@ export type Event =
   | EventMessagePartRemoved
   | EventSessionNextAgentSwitched
   | EventSessionNextModelSwitched
+  | EventSessionNextRecursiveChanged
   | EventSessionNextMoved
   | EventSessionNextPrompted
   | EventSessionNextPromptAdmitted
@@ -41,6 +42,9 @@ export type Event =
   | EventSessionNextToolProgress
   | EventSessionNextToolSuccess
   | EventSessionNextToolFailed
+  | EventSessionNextTaskStarted
+  | EventSessionNextTaskCompleted
+  | EventSessionNextTaskFailed
   | EventSessionNextRetried
   | EventSessionNextCompactionStarted
   | EventSessionNextCompactionDelta
@@ -840,6 +844,15 @@ export type GlobalEvent = {
       }
     | {
         id: string
+        type: "session.next.recursive.changed"
+        properties: {
+          timestamp: number
+          sessionID: string
+          recursive: SessionRecursiveInfo
+        }
+      }
+    | {
+        id: string
         type: "session.next.moved"
         properties: {
           timestamp: number
@@ -1120,6 +1133,42 @@ export type GlobalEvent = {
             executed: boolean
             metadata?: LlmProviderMetadata
           }
+        }
+      }
+    | {
+        id: string
+        type: "session.next.task.started"
+        properties: {
+          timestamp: number
+          sessionID: string
+          assistantMessageID: string
+          callID: string
+          taskSessionID: string
+          description: string
+          agent: string
+        }
+      }
+    | {
+        id: string
+        type: "session.next.task.completed"
+        properties: {
+          timestamp: number
+          sessionID: string
+          assistantMessageID: string
+          callID: string
+          taskSessionID: string
+        }
+      }
+    | {
+        id: string
+        type: "session.next.task.failed"
+        properties: {
+          timestamp: number
+          sessionID: string
+          assistantMessageID: string
+          callID: string
+          taskSessionID: string
+          error: SessionErrorUnknown
         }
       }
     | {
@@ -1610,6 +1659,7 @@ export type GlobalEvent = {
     | SyncEventMessagePartRemoved
     | SyncEventSessionNextAgentSwitched
     | SyncEventSessionNextModelSwitched
+    | SyncEventSessionNextRecursiveChanged
     | SyncEventSessionNextMoved
     | SyncEventSessionNextPrompted
     | SyncEventSessionNextPromptAdmitted
@@ -1630,6 +1680,9 @@ export type GlobalEvent = {
     | SyncEventSessionNextToolProgress
     | SyncEventSessionNextToolSuccess
     | SyncEventSessionNextToolFailed
+    | SyncEventSessionNextTaskStarted
+    | SyncEventSessionNextTaskCompleted
+    | SyncEventSessionNextTaskFailed
     | SyncEventSessionNextRetried
     | SyncEventSessionNextCompactionStarted
     | SyncEventSessionNextCompactionEnded
@@ -2135,6 +2188,20 @@ export type EffectHttpApiErrorInternalServerError = {
   _tag: "InternalServerError"
 }
 
+export type ChatGptUsageWindow = {
+  label: string
+  percent?: number
+  resetAt?: number
+  resetAfterSeconds?: number
+}
+
+export type ChatGptUsage = {
+  status: "ok" | "missing-auth" | "error"
+  plan?: string
+  windows: Array<ChatGptUsageWindow>
+  message?: string
+}
+
 export type ToolListItem = {
   id: string
   description: string
@@ -2225,6 +2292,7 @@ export type GlobalSession = {
   metadata?: {
     [key: string]: unknown
   }
+  recursive?: SessionRecursiveInfo
   time: {
     created: number
     updated: number
@@ -2535,10 +2603,442 @@ export type ProviderAuthError1 = {
   }
 }
 
+export type Session1 = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<SnapshotFileDiff>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  recursive?: SessionRecursiveInfo
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
+}
+
+export type Session2 = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<SnapshotFileDiff>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  recursive?: SessionRecursiveInfo
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
+}
+
 export type NotFoundError = {
   name: "NotFoundError"
   data: {
     message: string
+  }
+}
+
+export type Session3 = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<SnapshotFileDiff>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  recursive?: SessionRecursiveInfo
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
+}
+
+export type Session4 = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<SnapshotFileDiff>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  recursive?: SessionRecursiveInfo
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
+}
+
+export type Session5 = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<SnapshotFileDiff>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  recursive?: SessionRecursiveInfo
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
+}
+
+export type Session6 = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<SnapshotFileDiff>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  recursive?: SessionRecursiveInfo
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
+}
+
+export type Session7 = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<SnapshotFileDiff>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  recursive?: SessionRecursiveInfo
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
+}
+
+export type Session8 = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<SnapshotFileDiff>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  recursive?: SessionRecursiveInfo
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
   }
 }
 
@@ -2594,6 +3094,114 @@ export type SessionBusyError = {
   _tag: "SessionBusyError"
   sessionID: string
   message: string
+}
+
+export type Session9 = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<SnapshotFileDiff>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  recursive?: SessionRecursiveInfo
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
+}
+
+export type Session10 = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<SnapshotFileDiff>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  recursive?: SessionRecursiveInfo
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
 }
 
 export type EventTuiPromptAppend = {
@@ -2734,6 +3342,7 @@ export type UnknownError1 = {
 export type SessionDurableEvent =
   | SessionNextAgentSwitched
   | SessionNextModelSwitched
+  | SessionNextRecursiveChanged
   | SessionNextMoved
   | SessionNextPrompted
   | SessionNextPromptAdmitted
@@ -2752,6 +3361,9 @@ export type SessionDurableEvent =
   | SessionNextToolProgress
   | SessionNextToolSuccess
   | SessionNextToolFailed
+  | SessionNextTaskStarted
+  | SessionNextTaskCompleted
+  | SessionNextTaskFailed
   | SessionNextReasoningStarted
   | SessionNextReasoningEnded
   | SessionNextRetried
@@ -2861,6 +3473,7 @@ export type V2Event =
   | MessagePartRemoved
   | SessionNextAgentSwitched
   | SessionNextModelSwitched
+  | SessionNextRecursiveChanged
   | SessionNextMoved
   | SessionNextPrompted
   | SessionNextPromptAdmitted
@@ -2884,6 +3497,9 @@ export type V2Event =
   | SessionNextToolProgress
   | SessionNextToolSuccess
   | SessionNextToolFailed
+  | SessionNextTaskStarted
+  | SessionNextTaskCompleted
+  | SessionNextTaskFailed
   | SessionNextRetried
   | SessionNextCompactionStarted
   | SessionNextCompactionDelta
@@ -3034,6 +3650,13 @@ export type ModelRef = {
   id: string
   providerID: string
   variant?: string
+}
+
+export type SessionRecursiveStrategy = "rlm" | "rah" | "hybrid"
+
+export type SessionRecursiveInfo = {
+  enabled: boolean
+  strategy?: SessionRecursiveStrategy
 }
 
 export type LocationRef = {
@@ -3323,6 +3946,22 @@ export type SyncEventSessionNextModelSwitched = {
       sessionID: string
       messageID: string
       model: ModelRef
+    }
+  }
+}
+
+export type SyncEventSessionNextRecursiveChanged = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.next.recursive.changed.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      timestamp: number
+      sessionID: string
+      recursive: SessionRecursiveInfo
     }
   }
 }
@@ -3718,6 +4357,63 @@ export type SyncEventSessionNextToolFailed = {
   }
 }
 
+export type SyncEventSessionNextTaskStarted = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.next.task.started.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      timestamp: number
+      sessionID: string
+      assistantMessageID: string
+      callID: string
+      taskSessionID: string
+      description: string
+      agent: string
+    }
+  }
+}
+
+export type SyncEventSessionNextTaskCompleted = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.next.task.completed.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      timestamp: number
+      sessionID: string
+      assistantMessageID: string
+      callID: string
+      taskSessionID: string
+    }
+  }
+}
+
+export type SyncEventSessionNextTaskFailed = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.next.task.failed.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      timestamp: number
+      sessionID: string
+      assistantMessageID: string
+      callID: string
+      taskSessionID: string
+      error: SessionErrorUnknown
+    }
+  }
+}
+
 export type SyncEventSessionNextRetried = {
   type: "sync"
   id: string
@@ -3922,6 +4618,8 @@ export type SessionV2Info = {
   location: LocationRef
   subpath?: string
   revert?: RevertState
+  recursive?: SessionRecursiveInfo
+  permission?: Array<PermissionV2Rule>
 }
 
 export type PromptInputFileAttachment = {
@@ -4194,6 +4892,25 @@ export type SessionNextModelSwitched = {
     sessionID: string
     messageID: string
     model: ModelRef
+  }
+}
+
+export type SessionNextRecursiveChanged = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "session.next.recursive.changed"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    timestamp: number
+    sessionID: string
+    recursive: SessionRecursiveInfo
   }
 }
 
@@ -4602,6 +5319,72 @@ export type SessionNextToolFailed = {
       executed: boolean
       metadata?: LlmProviderMetadata
     }
+  }
+}
+
+export type SessionNextTaskStarted = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "session.next.task.started"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    timestamp: number
+    sessionID: string
+    assistantMessageID: string
+    callID: string
+    taskSessionID: string
+    description: string
+    agent: string
+  }
+}
+
+export type SessionNextTaskCompleted = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "session.next.task.completed"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    timestamp: number
+    sessionID: string
+    assistantMessageID: string
+    callID: string
+    taskSessionID: string
+  }
+}
+
+export type SessionNextTaskFailed = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "session.next.task.failed"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    timestamp: number
+    sessionID: string
+    assistantMessageID: string
+    callID: string
+    taskSessionID: string
+    error: SessionErrorUnknown
   }
 }
 
@@ -6265,6 +7048,16 @@ export type EventSessionNextModelSwitched = {
   }
 }
 
+export type EventSessionNextRecursiveChanged = {
+  id: string
+  type: "session.next.recursive.changed"
+  properties: {
+    timestamp: number
+    sessionID: string
+    recursive: SessionRecursiveInfo
+  }
+}
+
 export type EventSessionNextMoved = {
   id: string
   type: "session.next.moved"
@@ -6569,6 +7362,45 @@ export type EventSessionNextToolFailed = {
       executed: boolean
       metadata?: LlmProviderMetadata
     }
+  }
+}
+
+export type EventSessionNextTaskStarted = {
+  id: string
+  type: "session.next.task.started"
+  properties: {
+    timestamp: number
+    sessionID: string
+    assistantMessageID: string
+    callID: string
+    taskSessionID: string
+    description: string
+    agent: string
+  }
+}
+
+export type EventSessionNextTaskCompleted = {
+  id: string
+  type: "session.next.task.completed"
+  properties: {
+    timestamp: number
+    sessionID: string
+    assistantMessageID: string
+    callID: string
+    taskSessionID: string
+  }
+}
+
+export type EventSessionNextTaskFailed = {
+  id: string
+  type: "session.next.task.failed"
+  properties: {
+    timestamp: number
+    sessionID: string
+    assistantMessageID: string
+    callID: string
+    taskSessionID: string
+    error: SessionErrorUnknown
   }
 }
 
@@ -7550,6 +8382,39 @@ export type ExperimentalConsoleGetResponses = {
 }
 
 export type ExperimentalConsoleGetResponse = ExperimentalConsoleGetResponses[keyof ExperimentalConsoleGetResponses]
+
+export type ExperimentalChatgptUsageData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/chatgpt/usage"
+}
+
+export type ExperimentalChatgptUsageErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * InternalServerError
+   */
+  500: EffectHttpApiErrorInternalServerError
+}
+
+export type ExperimentalChatgptUsageError = ExperimentalChatgptUsageErrors[keyof ExperimentalChatgptUsageErrors]
+
+export type ExperimentalChatgptUsageResponses = {
+  /**
+   * ChatGPT usage limits
+   */
+  200: ChatGptUsage
+}
+
+export type ExperimentalChatgptUsageResponse =
+  ExperimentalChatgptUsageResponses[keyof ExperimentalChatgptUsageResponses]
 
 export type ExperimentalConsoleListOrgsData = {
   body?: never
@@ -9460,7 +10325,7 @@ export type SessionListResponses = {
   /**
    * List of sessions
    */
-  200: Array<Session>
+  200: Array<Session1>
 }
 
 export type SessionListResponse = SessionListResponses[keyof SessionListResponses]
@@ -9502,7 +10367,7 @@ export type SessionCreateResponses = {
   /**
    * Successfully created session
    */
-  200: Session
+  200: Session3
 }
 
 export type SessionCreateResponse = SessionCreateResponses[keyof SessionCreateResponses]
@@ -9600,7 +10465,7 @@ export type SessionGetResponses = {
   /**
    * Get session
    */
-  200: Session
+  200: Session2
 }
 
 export type SessionGetResponse = SessionGetResponses[keyof SessionGetResponses]
@@ -9643,7 +10508,7 @@ export type SessionUpdateResponses = {
   /**
    * Successfully updated session
    */
-  200: Session
+  200: Session4
 }
 
 export type SessionUpdateResponse = SessionUpdateResponses[keyof SessionUpdateResponses]
@@ -9677,7 +10542,7 @@ export type SessionChildrenResponses = {
   /**
    * List of children
    */
-  200: Array<Session>
+  200: Array<Session1>
 }
 
 export type SessionChildrenResponse = SessionChildrenResponses[keyof SessionChildrenResponses]
@@ -9946,7 +10811,7 @@ export type SessionForkResponses = {
   /**
    * 200
    */
-  200: Session
+  200: Session5
 }
 
 export type SessionForkResponse = SessionForkResponses[keyof SessionForkResponses]
@@ -10052,7 +10917,7 @@ export type SessionUnshareResponses = {
   /**
    * Successfully unshared session
    */
-  200: Session
+  200: Session7
 }
 
 export type SessionUnshareResponse = SessionUnshareResponses[keyof SessionUnshareResponses]
@@ -10090,7 +10955,7 @@ export type SessionShareResponses = {
   /**
    * Successfully shared session
    */
-  200: Session
+  200: Session6
 }
 
 export type SessionShareResponse = SessionShareResponses[keyof SessionShareResponses]
@@ -10132,6 +10997,40 @@ export type SessionSummarizeResponses = {
 }
 
 export type SessionSummarizeResponse = SessionSummarizeResponses[keyof SessionSummarizeResponses]
+
+export type SessionRecursiveData = {
+  body?: SessionRecursiveInfo
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/recursive"
+}
+
+export type SessionRecursiveErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionRecursiveError = SessionRecursiveErrors[keyof SessionRecursiveErrors]
+
+export type SessionRecursiveResponses = {
+  /**
+   * Updated session
+   */
+  200: Session8
+}
+
+export type SessionRecursiveResponse = SessionRecursiveResponses[keyof SessionRecursiveResponses]
 
 export type SessionPromptAsyncData = {
   body?: {
@@ -10319,7 +11218,7 @@ export type SessionRevertResponses = {
   /**
    * Updated session
    */
-  200: Session
+  200: Session9
 }
 
 export type SessionRevertResponse = SessionRevertResponses[keyof SessionRevertResponses]
@@ -10357,7 +11256,7 @@ export type SessionUnrevertResponses = {
   /**
    * Updated session
    */
-  200: Session
+  200: Session10
 }
 
 export type SessionUnrevertResponse = SessionUnrevertResponses[keyof SessionUnrevertResponses]
@@ -11544,6 +12443,41 @@ export type V2SessionSwitchModelResponses = {
 }
 
 export type V2SessionSwitchModelResponse = V2SessionSwitchModelResponses[keyof V2SessionSwitchModelResponses]
+
+export type V2SessionRecursiveData = {
+  body: SessionRecursiveInfo
+  path: {
+    sessionID: string
+  }
+  query?: never
+  url: "/api/session/{sessionID}/recursive"
+}
+
+export type V2SessionRecursiveErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+  /**
+   * SessionNotFoundError
+   */
+  404: SessionNotFoundError
+}
+
+export type V2SessionRecursiveError = V2SessionRecursiveErrors[keyof V2SessionRecursiveErrors]
+
+export type V2SessionRecursiveResponses = {
+  /**
+   * <No Content>
+   */
+  204: void
+}
+
+export type V2SessionRecursiveResponse = V2SessionRecursiveResponses[keyof V2SessionRecursiveResponses]
 
 export type V2SessionPromptData = {
   body: {

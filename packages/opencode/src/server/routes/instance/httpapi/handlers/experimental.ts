@@ -1,4 +1,5 @@
 import { Account } from "@/account/account"
+import { ChatGptUsage } from "@/auth/chatgpt-usage"
 import { Agent } from "@/agent/agent"
 import { BackgroundJob } from "@/background/job"
 import { Config } from "@/config/config"
@@ -55,6 +56,10 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
         ...(state.activeOrgName ? { activeOrgName: state.activeOrgName } : {}),
         switchableOrgCount: groups.reduce((count, group) => count + group.orgs.length, 0),
       }
+    })
+
+    const chatgptUsage = Effect.fn("ExperimentalHttpApi.chatgptUsage")(function* () {
+      return yield* ChatGptUsage.fetch().pipe(Effect.catch(() => Effect.fail(new HttpApiError.InternalServerError({}))))
     })
 
     const listConsoleOrgs = Effect.fn("ExperimentalHttpApi.consoleOrgs")(function* () {
@@ -178,6 +183,7 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
     return handlers
       .handle("capabilities", capabilities)
       .handle("console", getConsole)
+      .handle("chatgptUsage", chatgptUsage)
       .handle("consoleOrgs", listConsoleOrgs)
       .handle("consoleSwitch", switchConsole)
       .handle("tool", tool)

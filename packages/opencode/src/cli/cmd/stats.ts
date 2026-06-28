@@ -6,6 +6,7 @@ import { Database } from "@opencode-ai/core/database/database"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { Project } from "@/project/project"
 import { InstanceRef } from "@/effect/instance-ref"
+import { ChatGptUsage } from "@/auth/chatgpt-usage"
 
 interface SessionStats {
   totalSessions: number
@@ -65,6 +66,10 @@ export const StatsCommand = effectCmd({
       .option("project", {
         describe: "filter by project (default: all projects, empty string: current project)",
         type: "string",
+      })
+      .option("chatgpt", {
+        describe: "include ChatGPT plan usage limits",
+        type: "boolean",
       }),
   handler: Effect.fn("Cli.stats")(function* (args) {
     const ctx = yield* InstanceRef
@@ -77,8 +82,47 @@ export const StatsCommand = effectCmd({
       modelLimit = args.models
     }
     displayStats(stats, args.tools, modelLimit)
+    if (args.chatgpt) {
+      console.log("ChatGPT Usage")
+      for (const line of yield* ChatGptUsage.fetch().pipe(
+        Effect.map(renderChatGptUsage),
+        Effect.catchCause((cause) => Effect.succeed([`  ${formatCause(cause)}`])),
+      )) {
+        console.log(line)
+      }
+      console.log()
+    }
   }),
 })
+
+function renderChatGptUsage(info: ChatGptUsage.Info) {
+  if (info.status !== "ok") return [`  ${info.message ?? "ChatGPT usage unavailable."}`]
+  const lines = [info.plan ? `  Plan: ${info.plan}` : undefined, ...info.windows.map(renderUsageWindow)].filter(
+    (line): line is string => Boolean(line),
+  )
+  return lines.length ? lines : ["  No ChatGPT usage data returned."]
+}
+
+function renderUsageWindow(window: ChatGptUsage.UsageWindow) {
+  return `  ${window.label}: ${window.percent === undefined ? "unknown" : `${window.percent}% used`}${formatReset(window.resetAt, window.resetAfterSeconds)}`
+}
+
+function formatReset(resetAt: number | undefined, resetAfterSeconds: number | undefined) {
+  if (resetAt) return `, resets ${new Date(resetAt * 1000).toLocaleString()}`
+  if (resetAfterSeconds) return `, resets in ${formatDuration(resetAfterSeconds)}`
+  return ""
+}
+
+function formatDuration(seconds: number) {
+  if (seconds < 60) return `${Math.ceil(seconds)}s`
+  if (seconds < 60 * 60) return `${Math.ceil(seconds / 60)}m`
+  if (seconds < 24 * 60 * 60) return `${Math.ceil(seconds / (60 * 60))}h`
+  return `${Math.ceil(seconds / (24 * 60 * 60))}d`
+}
+
+function formatCause(cause: unknown) {
+  return cause instanceof Error ? cause.message : String(cause)
+}
 
 const getAllSessions = Effect.fnUntraced(function* () {
   const { db } = yield* Database.Service
@@ -114,8 +158,9 @@ const aggregateSessionStats = Effect.fn("Cli.stats.aggregate")(function* (
 
   if (projectFilter !== undefined) {
     if (projectFilter === "") {
-      if (!currentProject) throw new Error("currentProject required when projectFilter is empty string")
-      filteredSessions = filteredSessions.filter((session) => session.projectID === currentProject.id)
+      if (!currentProject) return yield* Effect.die(new Error("currentProject required when projectFilter is empty string"))
+      const project = currentProject
+      filteredSessions = filteredSessions.filter((session) => session.projectID === project.id)
     } else {
       filteredSessions = filteredSessions.filter((session) => session.projectID === projectFilter)
     }

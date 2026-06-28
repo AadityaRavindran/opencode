@@ -20,6 +20,7 @@ import type {
   SnapshotFileDiff,
   ConsoleState,
 } from "@opencode-ai/sdk/v2"
+import type { TuiChatGptUsage } from "@opencode-ai/plugin/tui"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useProject } from "./project"
 import { useEvent } from "./event"
@@ -28,7 +29,7 @@ import { useTuiStartup } from "./runtime"
 import { createSimpleContext } from "./helper"
 import { useExit } from "./exit"
 import { useArgs } from "./args"
-import { batch, onMount } from "solid-js"
+import { batch, onCleanup, onMount } from "solid-js"
 import path from "path"
 import { useKV } from "./kv"
 import { usePermission } from "./permission"
@@ -67,6 +68,7 @@ export const {
       provider_default: Record<string, string>
       provider_next: ProviderListResponse
       console_state: ConsoleState
+      chatgpt_usage: TuiChatGptUsage | undefined
       capabilities: {
         experimentalBackgroundSubagents: boolean
       }
@@ -112,6 +114,7 @@ export const {
         connected: [],
       },
       console_state: emptyConsoleState,
+      chatgpt_usage: undefined,
       capabilities: {
         experimentalBackgroundSubagents: false,
       },
@@ -167,9 +170,57 @@ export const {
         .then((x) => (x.data ?? []).toSorted((a, b) => a.id.localeCompare(b.id)))
     }
 
+    function fetchChatGptUsage(workspace: string | undefined) {
+      return sdk.client.experimental.chatgpt
+        .usage({ workspace }, { throwOnError: true })
+        .then((x) => x.data)
+        .catch(() => undefined)
+    }
+
+    let chatgptUsageRefresh: Promise<void> | undefined
+    let chatgptUsageResetTimer: ReturnType<typeof setTimeout> | undefined
+
+    function refreshChatGptUsage(workspace: string | undefined) {
+      if (chatgptUsageRefresh) return chatgptUsageRefresh
+      chatgptUsageRefresh = fetchChatGptUsage(workspace)
+        .then((usage) => {
+          if (workspace !== project.workspace.current()) return
+          setStore("chatgpt_usage", reconcile(usage))
+          scheduleChatGptUsageRefresh(usage, workspace)
+        })
+        .finally(() => {
+          chatgptUsageRefresh = undefined
+        })
+      return chatgptUsageRefresh
+    }
+
+    function scheduleChatGptUsageRefresh(usage: TuiChatGptUsage | undefined, workspace: string | undefined) {
+      if (chatgptUsageResetTimer) clearTimeout(chatgptUsageResetTimer)
+      const resetAt = exhaustedWindowResetAt(usage)
+      if (!resetAt) return
+      chatgptUsageResetTimer = setTimeout(
+        () => void refreshChatGptUsage(workspace),
+        Math.min(Math.max(resetAt - Date.now() + 1000, 1000), 2_147_483_647),
+      )
+    }
+
+    function exhaustedWindowResetAt(usage: TuiChatGptUsage | undefined) {
+      if (usage?.status !== "ok") return undefined
+      return usage.windows
+        .flatMap((window) => {
+          if ((window.percent ?? 0) < 100) return []
+          if (window.resetAt) return [window.resetAt * 1000]
+          if (window.resetAfterSeconds) return [Date.now() + window.resetAfterSeconds * 1000]
+          return []
+        })
+        .filter((time) => time > Date.now())
+        .toSorted((a, b) => a - b)[0]
+    }
+
     event.subscribe((event, { directory, workspace }) => {
       switch (event.type) {
         case "server.instance.disposed":
+          if (chatgptUsageResetTimer) clearTimeout(chatgptUsageResetTimer)
           void bootstrap()
           break
         case "permission.replied": {
@@ -309,6 +360,11 @@ export const {
 
         case "session.status": {
           setStore("session_status", event.properties.sessionID, event.properties.status)
+          if (workspace !== project.workspace.current()) break
+          if (event.properties.status.type === "idle") void refreshChatGptUsage(workspace)
+          if (event.properties.status.type === "retry" && event.properties.status.action?.reason === "account_rate_limit") {
+            void refreshChatGptUsage(workspace)
+          }
           break
         }
 
@@ -459,6 +515,7 @@ export const {
         .get({ workspace }, { throwOnError: true })
         .then((x) => x.data)
         .catch(() => emptyConsoleState)
+      const chatgptUsagePromise = fetchChatGptUsage(workspace)
       const agentsPromise = sdk.client.app.agents({ workspace }, { throwOnError: true })
       const configPromise = sdk.client.config.get({ workspace }, { throwOnError: true })
       await Promise.all([
@@ -514,6 +571,10 @@ export const {
           void Promise.all([
             ...(args.continue ? [] : [sessionListPromise.then((sessions) => setStore("session", reconcile(sessions)))]),
             consoleStatePromise.then((consoleState) => setStore("console_state", reconcile(consoleState))),
+            chatgptUsagePromise.then((usage) => {
+              setStore("chatgpt_usage", reconcile(usage))
+              scheduleChatGptUsageRefresh(usage, workspace)
+            }),
             sdk.client.command.list({ workspace }).then((x) => setStore("command", reconcile(x.data ?? []))),
             sdk.client.lsp.status({ workspace }).then((x) => setStore("lsp", reconcile(x.data ?? []))),
             sdk.client.mcp.status({ workspace }).then((x) => setStore("mcp", reconcile(x.data ?? {}))),
@@ -547,6 +608,10 @@ export const {
 
     onMount(() => {
       void bootstrap()
+    })
+
+    onCleanup(() => {
+      if (chatgptUsageResetTimer) clearTimeout(chatgptUsageResetTimer)
     })
 
     const result = {
