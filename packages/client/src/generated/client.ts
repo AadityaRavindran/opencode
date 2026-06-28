@@ -15,6 +15,8 @@ import type {
   SessionsSwitchAgentOutput,
   SessionsSwitchModelInput,
   SessionsSwitchModelOutput,
+  SessionsRecursiveInput,
+  SessionsRecursiveOutput,
   SessionsPromptInput,
   SessionsPromptOutput,
   SessionsCompactInput,
@@ -361,6 +363,18 @@ export function make(options: ClientOptions) {
             method: "POST",
             path: `/api/session/${encodeURIComponent(input.sessionID)}/model`,
             body: { model: input["model"] },
+            successStatus: 204,
+            declaredStatuses: [404, 400, 401],
+            empty: true,
+          },
+          requestOptions,
+        ),
+      recursive: (input: SessionsRecursiveInput, requestOptions?: RequestOptions) =>
+        request<SessionsRecursiveOutput>(
+          {
+            method: "POST",
+            path: `/api/session/${encodeURIComponent(input.sessionID)}/recursive`,
+            body: { enabled: input["enabled"], strategy: input["strategy"] },
             successStatus: 204,
             declaredStatuses: [404, 400, 401],
             empty: true,

@@ -7,6 +7,7 @@ import type { useSync } from "../context/sync"
 import type { useTheme } from "../context/theme"
 import { Dialog as DialogUI, type useDialog } from "../ui/dialog"
 import type { useOpencodeKeymap } from "../keymap"
+import type { useLocal } from "../context/local"
 import type { useKV } from "../context/kv"
 import { DialogAlert } from "../ui/dialog-alert"
 import { DialogConfirm } from "../ui/dialog-confirm"
@@ -31,6 +32,7 @@ type Input = {
   event: ReturnType<typeof useEvent>
   sdk: ReturnType<typeof useSDK>
   sync: ReturnType<typeof useSync>
+  local: ReturnType<typeof useLocal>
   theme: ReturnType<typeof useTheme>
   toast: ReturnType<typeof useToast>
   renderer: TuiPluginApi["renderer"]
@@ -95,7 +97,7 @@ function mapOptionCb<Value>(cb?: (item: TuiDialogSelectOption<Value>) => void) {
   return (item: SelectOption<Value>) => cb(pickOption(item))
 }
 
-function stateApi(sync: ReturnType<typeof useSync>): TuiPluginApi["state"] {
+function stateApi(sync: ReturnType<typeof useSync>, local: ReturnType<typeof useLocal>): TuiPluginApi["state"] {
   return {
     get ready() {
       return sync.ready
@@ -105,6 +107,12 @@ function stateApi(sync: ReturnType<typeof useSync>): TuiPluginApi["state"] {
     },
     get provider() {
       return sync.data.provider
+    },
+    get model() {
+      return local.model.current()
+    },
+    get chatgpt() {
+      return sync.data.chatgpt_usage
     },
     get path() {
       return sync.path
@@ -119,6 +127,9 @@ function stateApi(sync: ReturnType<typeof useSync>): TuiPluginApi["state"] {
     session: {
       count() {
         return sync.data.session.length
+      },
+      list() {
+        return sync.data.session
       },
       get(sessionID) {
         return sync.session.get(sessionID)
@@ -297,7 +308,7 @@ export function createTuiApiAdapters(input: Input): Omit<TuiPluginApi, "lifecycl
         return input.kv.ready
       },
     },
-    state: stateApi(input.sync),
+    state: stateApi(input.sync, input.local),
     get client() {
       return input.sdk.client
     },

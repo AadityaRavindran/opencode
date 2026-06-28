@@ -122,7 +122,7 @@ async function exchangeCodeForTokens(code: string, redirectUri: string, pkce: Pk
   return response.json()
 }
 
-async function refreshAccessToken(refreshToken: string, issuer = ISSUER): Promise<TokenResponse> {
+export async function refreshAccessToken(refreshToken: string, issuer = ISSUER): Promise<TokenResponse> {
   const response = await fetch(`${issuer}/oauth/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },

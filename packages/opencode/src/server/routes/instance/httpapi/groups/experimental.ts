@@ -18,6 +18,7 @@ import { described } from "./metadata"
 import { QueryBoolean } from "./query"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
+import { ChatGptUsage } from "@/auth/chatgpt-usage"
 
 const ConsoleStateResponse = Schema.Struct({
   consoleManagedProviders: Schema.mutable(Schema.Array(Schema.String)),
@@ -90,6 +91,7 @@ export const SessionListQuery = Schema.Struct({
 export const ExperimentalPaths = {
   capabilities: "/experimental/capabilities",
   console: "/experimental/console",
+  chatgptUsage: "/experimental/chatgpt/usage",
   consoleOrgs: "/experimental/console/orgs",
   consoleSwitch: "/experimental/console/switch",
   tool: "/experimental/tool",
@@ -124,6 +126,17 @@ export const ExperimentalApi = HttpApi.make("experimental")
             identifier: "experimental.console.get",
             summary: "Get active Console provider metadata",
             description: "Get the active Console org name and the set of provider IDs managed by that Console org.",
+          }),
+        ),
+        HttpApiEndpoint.get("chatgptUsage", ExperimentalPaths.chatgptUsage, {
+          query: WorkspaceRoutingQuery,
+          success: described(ChatGptUsage.Info, "ChatGPT usage limits"),
+          error: HttpApiError.InternalServerError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "experimental.chatgpt.usage",
+            summary: "Get ChatGPT usage limits",
+            description: "Get ChatGPT plan usage windows for the current OpenAI OAuth account.",
           }),
         ),
         HttpApiEndpoint.get("consoleOrgs", ExperimentalPaths.consoleOrgs, {

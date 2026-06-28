@@ -376,6 +376,8 @@ export type TuiState = {
   readonly ready: boolean
   readonly config: SdkConfig
   readonly provider: ReadonlyArray<Provider>
+  readonly model: { readonly providerID: string; readonly modelID: string } | undefined
+  readonly chatgpt: TuiChatGptUsage | undefined
   readonly path: {
     state: string
     config: string
@@ -385,6 +387,7 @@ export type TuiState = {
   readonly vcs: { branch?: string; default_branch?: string } | undefined
   session: {
     count: () => number
+    list: () => ReadonlyArray<Session>
     get: (sessionID: string) => Session | undefined
     diff: (sessionID: string) => ReadonlyArray<TuiSidebarFileItem>
     todo: (sessionID: string) => ReadonlyArray<TuiSidebarTodoItem>
@@ -396,6 +399,18 @@ export type TuiState = {
   part: (messageID: string) => ReadonlyArray<Part>
   lsp: () => ReadonlyArray<TuiSidebarLspItem>
   mcp: () => ReadonlyArray<TuiSidebarMcpItem>
+}
+
+export type TuiChatGptUsage = {
+  readonly status: "ok" | "missing-auth" | "error"
+  readonly plan?: string
+  readonly windows: ReadonlyArray<{
+    readonly label: string
+    readonly percent?: number
+    readonly resetAt?: number
+    readonly resetAfterSeconds?: number
+  }>
+  readonly message?: string
 }
 
 type TuiBindingLookupView = {

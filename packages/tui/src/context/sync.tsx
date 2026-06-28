@@ -20,6 +20,7 @@ import type {
   SnapshotFileDiff,
   ConsoleState,
 } from "@opencode-ai/sdk/v2"
+import type { TuiChatGptUsage } from "@opencode-ai/plugin/tui"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useProject } from "./project"
 import { useEvent } from "./event"
@@ -65,6 +66,7 @@ export const {
       provider_default: Record<string, string>
       provider_next: ProviderListResponse
       console_state: ConsoleState
+      chatgpt_usage: TuiChatGptUsage | undefined
       capabilities: {
         experimentalBackgroundSubagents: boolean
       }
@@ -110,6 +112,7 @@ export const {
         connected: [],
       },
       console_state: emptyConsoleState,
+      chatgpt_usage: undefined,
       capabilities: {
         experimentalBackgroundSubagents: false,
       },
@@ -448,6 +451,10 @@ export const {
         .get({ workspace }, { throwOnError: true })
         .then((x) => x.data)
         .catch(() => emptyConsoleState)
+      const chatgptUsagePromise = sdk.client.experimental.chatgpt
+        .usage({ workspace }, { throwOnError: true })
+        .then((x) => x.data)
+        .catch(() => undefined)
       const agentsPromise = sdk.client.app.agents({ workspace }, { throwOnError: true })
       const configPromise = sdk.client.config.get({ workspace }, { throwOnError: true })
       await Promise.all([
@@ -503,6 +510,7 @@ export const {
           void Promise.all([
             ...(args.continue ? [] : [sessionListPromise.then((sessions) => setStore("session", reconcile(sessions)))]),
             consoleStatePromise.then((consoleState) => setStore("console_state", reconcile(consoleState))),
+            chatgptUsagePromise.then((usage) => setStore("chatgpt_usage", reconcile(usage))),
             sdk.client.command.list({ workspace }).then((x) => setStore("command", reconcile(x.data ?? []))),
             sdk.client.lsp.status({ workspace }).then((x) => setStore("lsp", reconcile(x.data ?? []))),
             sdk.client.mcp.status({ workspace }).then((x) => setStore("mcp", reconcile(x.data ?? {}))),
