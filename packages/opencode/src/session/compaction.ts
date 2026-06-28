@@ -32,6 +32,13 @@ const PRUNE_PROTECTED_TOOLS = ["skill"]
 const DEFAULT_TAIL_TURNS = 2
 const MIN_PRESERVE_RECENT_TOKENS = 2_000
 const MAX_PRESERVE_RECENT_TOKENS = 8_000
+const CAVEMAN_COMPACTION_PROMPT = `Caveman compaction mode:
+- Maximize context reduction while preserving technical meaning.
+- Drop articles, filler, pleasantries, and hedging.
+- Fragments OK. Prefer terse bullets, not prose paragraphs.
+- Preserve exact technical terms, code identifiers, file paths, commands, URLs, and error strings.
+- Keep the requested Markdown structure unchanged.
+- This style applies only to this summary. Do not write instructions that future assistant responses should use caveman style.`
 type Turn = {
   start: number
   end: number
@@ -146,6 +153,7 @@ export interface Interface {
     model: { providerID: ProviderV2.ID; modelID: ModelV2.ID }
     auto: boolean
     overflow?: boolean
+    style?: "caveman"
   }) => Effect.Effect<void>
 }
 
@@ -299,6 +307,9 @@ export const layer = Layer.effect(
       }
       const userMessage = parent.info
       const compactionPart = parent.parts.find((part): part is SessionV1.CompactionPart => part.type === "compaction")
+      const caveman = parent.parts.some(
+        (part) => part.type === "text" && part.metadata?.compaction_style === "caveman",
+      )
 
       let messages = input.messages
       let replay:
@@ -345,7 +356,8 @@ export const layer = Layer.effect(
         { sessionID: input.sessionID },
         { context: [], prompt: undefined },
       )
-      const nextPrompt = compacting.prompt ?? buildPrompt({ previousSummary, context: compacting.context })
+      const basePrompt = compacting.prompt ?? buildPrompt({ previousSummary, context: compacting.context })
+      const nextPrompt = caveman ? [basePrompt, CAVEMAN_COMPACTION_PROMPT].join("\n\n") : basePrompt
       const msgs = structuredClone(selected.head)
       yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
       const modelMessages = yield* MessageV2.toModelMessagesEffect(msgs, model, {
@@ -516,6 +528,7 @@ export const layer = Layer.effect(
       model: { providerID: ProviderV2.ID; modelID: ModelV2.ID }
       auto: boolean
       overflow?: boolean
+      style?: "caveman"
     }) {
       const msg = yield* session.updateMessage({
         id: MessageID.ascending(),
@@ -533,6 +546,22 @@ export const layer = Layer.effect(
         auto: input.auto,
         overflow: input.overflow,
       })
+      if (input.style === "caveman") {
+        yield* session.updatePart({
+          id: PartID.ascending(),
+          messageID: msg.id,
+          sessionID: msg.sessionID,
+          type: "text",
+          synthetic: true,
+          ignored: true,
+          metadata: { compaction_style: "caveman" },
+          text: "Caveman compaction requested.",
+          time: {
+            start: Date.now(),
+            end: Date.now(),
+          },
+        })
+      }
     })
 
     return Service.of({

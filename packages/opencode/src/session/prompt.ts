@@ -1379,9 +1379,11 @@ export const layer = Layer.effect(
         command: input.command,
         agent: input.agent,
       })
-      if (input.command === Command.Default.COMPACT) {
+      if (input.command === Command.Default.COMPACT || input.command === Command.Default.CAVEMAN_COMPACT) {
         const model = input.model ? Provider.parseModel(input.model) : yield* currentModel(input.sessionID)
         const agent = input.agent ?? (yield* agents.defaultInfo()).name
+        const style =
+          input.command === Command.Default.CAVEMAN_COMPACT || /\bcaveman\b/i.test(input.arguments) ? "caveman" : undefined
         yield* revert.cleanup(yield* sessions.get(input.sessionID).pipe(Effect.orDie))
         yield* compaction.create({
           sessionID: input.sessionID,
@@ -1391,6 +1393,7 @@ export const layer = Layer.effect(
             modelID: model.modelID,
           },
           auto: false,
+          style,
         })
         const result = yield* loop({ sessionID: input.sessionID })
         yield* events.publish(Command.Event.Executed, {

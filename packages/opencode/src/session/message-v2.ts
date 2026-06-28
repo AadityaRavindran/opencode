@@ -44,6 +44,10 @@ interface FetchDecompressionError extends Error {
 }
 
 export const SYNTHETIC_ATTACHMENT_PROMPT = "Attached media from tool result:"
+const CAVEMAN_COMPACTION_REPLAY_PROMPT =
+  "What did we do so far? Answer in compact caveman style for this summary only. Future assistant responses should use normal style unless the user explicitly asks otherwise."
+const CAVEMAN_SUMMARY_CONTEXT_PREFIX =
+  "Compressed session summary. Caveman style was used only to save context; do not imitate this style in future assistant responses."
 export { isMedia }
 
 function truncateToolOutput(text: string, maxChars?: number) {
@@ -192,6 +196,16 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
     return { type: "json", value: output as never }
   }
 
+  const cavemanCompactionParents = new Set(
+    input.flatMap((msg) =>
+      msg.info.role === "user" &&
+      msg.parts.some((part) => part.type === "compaction") &&
+      msg.parts.some((part) => part.type === "text" && part.metadata?.compaction_style === "caveman")
+        ? [msg.info.id]
+        : [],
+    ),
+  )
+
   for (const msg of input) {
     if (msg.parts.length === 0) continue
 
@@ -228,7 +242,9 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
         if (part.type === "compaction") {
           userMessage.parts.push({
             type: "text",
-            text: "What did we do so far?",
+            text: cavemanCompactionParents.has(msg.info.id)
+              ? CAVEMAN_COMPACTION_REPLAY_PROMPT
+              : "What did we do so far?",
           })
         }
         if (part.type === "subtask") {
@@ -259,6 +275,8 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
         role: "assistant",
         parts: [],
       }
+      const cavemanSummary = msg.info.summary && cavemanCompactionParents.has(msg.info.parentID)
+      let cavemanSummaryLabeled = false
       // Anthropic adaptive thinking can persist assistant turns like:
       // step-start, reasoning(signature), text(""), step-start,
       // reasoning(signature). The empty text part is a structural separator,
@@ -277,9 +295,14 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
       for (const part of msg.parts) {
         if (part.type === "text") {
           const text = part.text === "" && hasSignedReasoning ? " " : part.text
+          const replayText =
+            cavemanSummary && !cavemanSummaryLabeled && text.trim()
+              ? `${CAVEMAN_SUMMARY_CONTEXT_PREFIX}\n\n${text}`
+              : text
+          if (replayText !== text) cavemanSummaryLabeled = true
           assistantMessage.parts.push({
             type: "text",
-            text,
+            text: replayText,
             ...(differentModel ? {} : { providerMetadata: part.metadata }),
           })
         }

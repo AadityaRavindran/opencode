@@ -47,6 +47,7 @@ export const Default = {
   INIT: "init",
   REVIEW: "review",
   COMPACT: "compact",
+  CAVEMAN_COMPACT: "caveman-compact",
 } as const
 
 export interface Interface {
@@ -90,6 +91,13 @@ export const layer = Layer.effect(
       commands[Default.COMPACT] = {
         name: Default.COMPACT,
         description: "compact session history",
+        source: "command",
+        template: "",
+        hints: [],
+      }
+      commands[Default.CAVEMAN_COMPACT] = {
+        name: Default.CAVEMAN_COMPACT,
+        description: "compact session history using caveman compression",
         source: "command",
         template: "",
         hints: [],
