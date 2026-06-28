@@ -343,6 +343,76 @@ describe("SessionProjector", () => {
     }),
   )
 
+  it.effect("does not project task status events into the message timeline", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      yield* db
+        .insert(ProjectTable)
+        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+        .run()
+        .pipe(Effect.orDie)
+      yield* db
+        .insert(SessionTable)
+        .values({
+          id: sessionID,
+          project_id: Project.ID.global,
+          slug: "test",
+          directory: "/project",
+          title: "test",
+          version: "test",
+        })
+        .run()
+        .pipe(Effect.orDie)
+      const events = yield* EventV2.Service
+      const assistantMessageID = SessionMessage.ID.create()
+      const taskSessionID = SessionV2.ID.make("ses_child_task")
+
+      yield* events.publish(SessionEvent.Task.Started, {
+        sessionID,
+        timestamp: created,
+        assistantMessageID,
+        callID: "call-task",
+        taskSessionID,
+        description: "inspect bug",
+        agent: "general",
+      })
+      yield* events.publish(SessionEvent.Task.Completed, {
+        sessionID,
+        timestamp: created,
+        assistantMessageID,
+        callID: "call-task",
+        taskSessionID,
+      })
+      yield* events.publish(SessionEvent.Task.Failed, {
+        sessionID,
+        timestamp: created,
+        assistantMessageID,
+        callID: "call-task",
+        taskSessionID,
+        error: { type: "unknown", message: "failed" },
+      })
+
+      expect(
+        yield* db.select().from(SessionMessageTable).where(eq(SessionMessageTable.session_id, sessionID)).all().pipe(
+          Effect.orDie,
+        ),
+      ).toEqual([])
+      expect(
+        (yield* db
+          .select({ type: EventTable.type })
+          .from(EventTable)
+          .where(eq(EventTable.aggregate_id, sessionID))
+          .orderBy(asc(EventTable.seq))
+          .all()
+          .pipe(Effect.orDie)).map((event) => event.type),
+      ).toEqual([
+        EventV2.versionedType(SessionEvent.Task.Started.type, 1),
+        EventV2.versionedType(SessionEvent.Task.Completed.type, 1),
+        EventV2.versionedType(SessionEvent.Task.Failed.type, 1),
+      ])
+    }),
+  )
+
   it.effect("rejects distinct creator events that reuse one projected message ID", () =>
     Effect.gen(function* () {
       const { db } = yield* Database.Service

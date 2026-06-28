@@ -21,6 +21,7 @@ import { Model } from "@opencode-ai/schema/model"
 import { Location } from "@opencode-ai/schema/location"
 import { Revert } from "@opencode-ai/schema/revert"
 import { SessionEvent } from "@opencode-ai/schema/session-event"
+import { SessionRecursive } from "@opencode-ai/schema/session-recursive"
 
 const SessionsQueryFields = {
   workspace: Workspace.ID.pipe(Schema.optional),
@@ -198,6 +199,22 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S>(sessionLo
             identifier: "v2.session.switchModel",
             summary: "Switch session model",
             description: "Switch the model used by subsequent provider turns.",
+          }),
+        ),
+    )
+    .add(
+      HttpApiEndpoint.post("session.recursive", "/api/session/:sessionID/recursive", {
+        params: { sessionID: Session.ID },
+        payload: SessionRecursive.Info,
+        success: HttpApiSchema.NoContent,
+        error: SessionNotFoundError,
+      })
+        .middleware(sessionLocationMiddleware)
+        .annotateMerge(
+          OpenApi.annotations({
+            identifier: "v2.session.recursive",
+            summary: "Set recursive mode",
+            description: "Enable or disable recursive execution mode for subsequent prompts in a session.",
           }),
         ),
     )

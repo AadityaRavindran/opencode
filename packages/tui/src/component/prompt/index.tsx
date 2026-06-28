@@ -37,7 +37,7 @@ import { usePromptStash } from "../../prompt/stash"
 import { DialogStash } from "../dialog-stash"
 import { type AutocompleteRef, Autocomplete } from "./autocomplete"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
-import type { AssistantMessage, FilePart, UserMessage } from "@opencode-ai/sdk/v2"
+import type { AssistantMessage, FilePart, Session, UserMessage } from "@opencode-ai/sdk/v2"
 import { Locale } from "../../util/locale"
 import { errorMessage } from "../../util/error"
 import { formatDuration } from "../../util/format"
@@ -70,6 +70,67 @@ export type PromptProps = {
     normal?: string[]
     shell?: string[]
   }
+}
+
+type RecursiveCommand =
+  | { readonly type: "set"; readonly enabled: boolean; readonly strategy?: RecursiveStrategy }
+  | { readonly type: "status" }
+  | { readonly type: "invalid"; readonly message: string }
+
+type RecursiveStrategy = "rlm" | "rah" | "hybrid"
+type RecursiveMode = { readonly enabled: boolean; readonly strategy?: RecursiveStrategy }
+type RecursiveSession = Session & { readonly recursive?: unknown; readonly metadata?: Record<string, unknown> }
+
+function isRecursiveStrategy(value: string | undefined): value is RecursiveStrategy {
+  return value === "rlm" || value === "rah" || value === "hybrid"
+}
+
+function recursiveFromUnknown(value: unknown): RecursiveMode | undefined {
+  if (typeof value !== "object" || value === null) return undefined
+  const recursive = value as Record<string, unknown>
+  if (typeof recursive.enabled !== "boolean") return undefined
+  if (recursive.strategy !== undefined && typeof recursive.strategy !== "string") return { enabled: recursive.enabled }
+  return {
+    enabled: recursive.enabled,
+    strategy: isRecursiveStrategy(recursive.strategy) ? recursive.strategy : undefined,
+  }
+}
+
+function parseRecursiveCommand(text: string): RecursiveCommand | undefined {
+  const [command, action, strategy, ...rest] = text.trim().split(/\s+/)
+  if (command !== "/recursive") return undefined
+  if (rest.length > 0)
+    return {
+      type: "invalid",
+      message: "Usage: /recursive on [rlm|rah|hybrid], /recursive off, or /recursive status",
+    }
+  if (action === "on") {
+    if (strategy === undefined) return { type: "set", enabled: true, strategy: "hybrid" }
+    if (!isRecursiveStrategy(strategy))
+      return { type: "invalid", message: "Recursive strategy must be rlm, rah, or hybrid" }
+    return { type: "set", enabled: true, strategy }
+  }
+  if (action === "off") return { type: "set", enabled: false }
+  if (action === "status") return { type: "status" }
+  return {
+    type: "invalid",
+    message: "Usage: /recursive on [rlm|rah|hybrid], /recursive off, or /recursive status",
+  }
+}
+
+function sessionRecursive(session: Session | undefined) {
+  if (!session) return undefined
+  const current = session as RecursiveSession
+  return recursiveFromUnknown(current.recursive) ?? recursiveFromUnknown(current.metadata?.recursive)
+}
+
+function recursiveLabel(recursive: RecursiveMode | undefined) {
+  if (recursive?.enabled !== true) return "Off"
+  return recursive.strategy ? `On (${recursive.strategy.toUpperCase()})` : "On"
+}
+
+function recursiveMetadata(session: Session | undefined, recursive: RecursiveMode) {
+  return { ...(session?.metadata ?? {}), recursive }
 }
 
 function pastedFilepath(value: string, platform: string) {
@@ -525,6 +586,22 @@ export function Prompt(props: PromptProps) {
               }}
             />
           ))
+        },
+      },
+      {
+        title: "Recursive mode",
+        desc: "Set recursive mode: /recursive on [rlm|rah|hybrid], /recursive off, or /recursive status",
+        name: "prompt.recursive",
+        category: "Prompt",
+        slashName: "recursive",
+        run: () => {
+          const text = "/recursive "
+          input.setText(text)
+          setStore("prompt", {
+            input: text,
+            parts: [],
+          })
+          input.gotoBufferEnd()
         },
       },
       {
@@ -1030,6 +1107,56 @@ export function Prompt(props: PromptProps) {
 
     // Filter out text parts (pasted content) since they're now expanded inline
     const nonTextParts = store.prompt.parts.filter((part) => part.type !== "text")
+
+    const recursive = parseRecursiveCommand(inputText)
+    if (recursive) {
+      if (recursive.type === "invalid") {
+        toast.show({ title: "Recursive mode", message: recursive.message, variant: "error" })
+        return true
+      }
+      if (recursive.type === "status") {
+        toast.show({
+          title: "Recursive mode",
+          message: recursiveLabel(sessionRecursive(sync.session.get(sessionID))),
+          variant: "info",
+        })
+      } else {
+        const result = await sdk.client.session.update({
+          sessionID,
+          metadata: recursiveMetadata(sync.session.get(sessionID), {
+            enabled: recursive.enabled,
+            strategy: recursive.strategy,
+          }),
+        })
+        if (result.error) {
+          toast.show({ title: "Recursive mode", message: errorMessage(result.error), variant: "error" })
+          return true
+        }
+        if (result.data) sync.session.remember(result.data)
+        toast.show({
+          title: "Recursive mode",
+          message: recursiveLabel(sessionRecursive(sync.session.get(sessionID))),
+          variant: "success",
+        })
+      }
+      history.append({ ...store.prompt, mode: store.mode })
+      input.extmarks.clear()
+      setStore("prompt", { input: "", parts: [] })
+      setStore("extmarkToPartIndex", new Map())
+      setStore("mode", "normal")
+      props.onSubmit?.()
+      if (!props.sessionID) {
+        setTimeout(() => {
+          route.navigate({
+            type: "session",
+            sessionID,
+          })
+        }, 50)
+      }
+      input.clear()
+      if (finishMoveProgress) move.finishSubmit()
+      return true
+    }
 
     // Capture mode before it gets reset
     const currentMode = store.mode

@@ -52,6 +52,76 @@ const draftText = (prompt: Prompt) => prompt.map((part) => ("content" in part ? 
 
 const draftImages = (prompt: Prompt) => prompt.filter((part): part is ImageAttachmentPart => part.type === "image")
 
+type RecursiveCommand =
+  | { readonly type: "set"; readonly enabled: boolean; readonly strategy?: RecursiveStrategy }
+  | { readonly type: "status" }
+  | { readonly type: "invalid"; readonly message: string }
+
+type RecursiveStrategy = "rlm" | "rah" | "hybrid"
+type RecursiveMode = { readonly enabled: boolean; readonly strategy?: RecursiveStrategy }
+type RecursiveSession = Session & { readonly recursive?: unknown; readonly metadata?: Record<string, unknown> }
+
+function isRecursiveStrategy(value: string | undefined): value is RecursiveStrategy {
+  return value === "rlm" || value === "rah" || value === "hybrid"
+}
+
+function recursiveFromUnknown(value: unknown): RecursiveMode | undefined {
+  if (typeof value !== "object" || value === null) return undefined
+  const recursive = value as Record<string, unknown>
+  if (typeof recursive.enabled !== "boolean") return undefined
+  if (recursive.strategy !== undefined && typeof recursive.strategy !== "string") return { enabled: recursive.enabled }
+  return {
+    enabled: recursive.enabled,
+    strategy: isRecursiveStrategy(recursive.strategy) ? recursive.strategy : undefined,
+  }
+}
+
+function parseRecursiveCommand(text: string): RecursiveCommand | undefined {
+  const [command, action, strategy, ...rest] = text.trim().split(/\s+/)
+  if (command !== "/recursive") return undefined
+  if (rest.length > 0)
+    return {
+      type: "invalid",
+      message: "Usage: /recursive on [rlm|rah|hybrid], /recursive off, or /recursive status",
+    }
+  if (action === "on") {
+    if (strategy === undefined) return { type: "set", enabled: true, strategy: "hybrid" }
+    if (!isRecursiveStrategy(strategy))
+      return { type: "invalid", message: "Recursive strategy must be rlm, rah, or hybrid" }
+    return { type: "set", enabled: true, strategy }
+  }
+  if (action === "off") return { type: "set", enabled: false }
+  if (action === "status") return { type: "status" }
+  return {
+    type: "invalid",
+    message: "Usage: /recursive on [rlm|rah|hybrid], /recursive off, or /recursive status",
+  }
+}
+
+function sessionRecursive(session: Session | undefined) {
+  if (!session) return undefined
+  const current = session as RecursiveSession
+  return recursiveFromUnknown(current.recursive) ?? recursiveFromUnknown(current.metadata?.recursive)
+}
+
+function recursiveLabel(recursive: RecursiveMode | undefined) {
+  if (recursive?.enabled !== true) return "Off"
+  return recursive.strategy ? `On (${recursive.strategy.toUpperCase()})` : "On"
+}
+
+function recursiveMetadata(session: { readonly metadata?: Record<string, unknown> } | undefined, recursive: RecursiveMode) {
+  return { ...(session?.metadata ?? {}), recursive }
+}
+
+function recursiveErrorMessage(err: unknown) {
+  if (err && typeof err === "object" && "data" in err) {
+    const data = (err as { data?: { message?: string } }).data
+    if (data?.message) return data.message
+  }
+  if (err instanceof Error) return err.message
+  return "Request failed"
+}
+
 export async function sendFollowupDraft(input: FollowupSendInput) {
   const text = draftText(input.draft.prompt)
   const images = draftImages(input.draft.prompt)
@@ -72,6 +142,37 @@ export async function sendFollowupDraft(input: FollowupSendInput) {
   }
 
   const [head, ...tail] = text.split(" ")
+  const recursive = parseRecursiveCommand(text)
+  if (recursive) {
+    if (recursive.type === "invalid") {
+      showToast({ title: "Recursive mode", description: recursive.message })
+      return false
+    }
+    if (recursive.type === "status") {
+      showToast({
+        title: "Recursive mode",
+        description: recursiveLabel(sessionRecursive(input.sync.session.get(input.draft.sessionID))),
+      })
+      return true
+    }
+    setBusy()
+    try {
+      const current = input.sync.session.get(input.draft.sessionID)
+      const updated = await input.client.session.update({
+        sessionID: input.draft.sessionID,
+        metadata: recursiveMetadata(current, { enabled: recursive.enabled, strategy: recursive.strategy }),
+      })
+      if (updated.data) input.sync.session.remember(updated.data)
+      showToast({ title: "Recursive mode", description: recursiveLabel(sessionRecursive(updated.data)) })
+      setIdle()
+      return true
+    } catch (err) {
+      setIdle()
+      showToast({ title: "Recursive mode", description: recursiveErrorMessage(err) })
+      return false
+    }
+  }
+
   const cmd = head?.startsWith("/") ? head.slice(1) : undefined
   if (cmd && input.sync.data.command.find((item) => item.name === cmd)) {
     setBusy()
@@ -427,6 +528,40 @@ export function createPromptSubmit(input: PromptSubmitInput) {
         input.queueScroll()
       })
       return true
+    }
+
+    const recursive = parseRecursiveCommand(text)
+    if (recursive) {
+      if (recursive.type === "invalid") {
+        showToast({ title: "Recursive mode", description: recursive.message })
+        return
+      }
+      if (recursive.type === "status") {
+        showToast({
+          title: "Recursive mode",
+          description: recursiveLabel(sessionRecursive(sync().session.get(session.id))),
+        })
+        clearInput()
+        return
+      }
+      clearInput()
+      client.session
+        .update({
+          sessionID: session.id,
+          metadata: recursiveMetadata(sync().session.get(session.id), {
+            enabled: recursive.enabled,
+            strategy: recursive.strategy,
+          }),
+        })
+        .then((result) => {
+          if (result.data) sync().session.remember(result.data)
+          showToast({ title: "Recursive mode", description: recursiveLabel(sessionRecursive(result.data)) })
+        })
+        .catch((err) => {
+          showToast({ title: "Recursive mode", description: errorMessage(err) })
+          restoreInput()
+        })
+      return
     }
 
     if (!isNewSession && mode === "normal" && input.shouldQueue?.()) {

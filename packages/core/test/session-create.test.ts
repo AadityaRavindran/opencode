@@ -358,6 +358,35 @@ describe("SessionV2.create", () => {
     }),
   )
 
+  it.effect("persists recursive mode through the durable Session event", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionV2.Service
+      const created = yield* session.create({ location })
+      const recursive = { enabled: true as const, strategy: "rah" as const }
+
+      yield* session.recursive({ sessionID: created.id, recursive })
+
+      expect(yield* session.get(created.id)).toMatchObject({ recursive })
+      expect(
+        Array.from(yield* session.events({ sessionID: created.id }).pipe(Stream.take(1), Stream.runCollect)),
+      ).toMatchObject([{ type: "session.next.recursive.changed", data: { recursive } }])
+    }),
+  )
+
+  it.effect("rejects recursive mode changes for a missing Session", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionV2.Service
+      const missing = SessionV2.ID.make("ses_missing_recursive_switch")
+
+      expect(
+        yield* session.recursive({ sessionID: missing, recursive: { enabled: false } }).pipe(
+          Effect.flip,
+          Effect.map((error) => error._tag),
+        ),
+      ).toBe("Session.NotFoundError")
+    }),
+  )
+
   it.effect("switches the selected model through the durable Session event", () =>
     Effect.gen(function* () {
       const session = yield* SessionV2.Service

@@ -80,6 +80,21 @@ IMPORTANT:
 - This tool provides your final answer - no further actions are taken after calling it`
 
 const STRUCTURED_OUTPUT_SYSTEM_PROMPT = `IMPORTANT: The user has requested structured output. You MUST use the StructuredOutput tool to provide your final response. Do NOT respond with plain text - you MUST call the StructuredOutput tool with your answer formatted according to the schema.`
+const RECURSIVE_RLM_SYSTEM_PROMPT = `Recursive RLM mode is enabled for this session. Use the visible session history as the working set and prefer tools or subagents for details that are not visible rather than relying on memory. If old session context is required and unavailable, say what needs to be inspected instead of guessing.`
+const RECURSIVE_RAH_SYSTEM_PROMPT = `Recursive Agent Harness mode is enabled for this session. For complex work, decompose the request into explicit smaller investigations or implementation slices before acting. Use the todo tool when available to track multi-step recursive work: create concise actionable items, keep exactly one item in progress, mark items complete as soon as they are verified, and add follow-up items for blockers or discoveries. Use the task tool for independent subtasks when it is available, but keep fanout bounded: at most 6 direct subtasks per session, depth at most 2, and no background subtasks. Reconcile subtask results into one coherent answer or implementation plan, and avoid todos or subtasks for simple local edits.`
+
+function recursiveStrategy(session: Session.Info) {
+  if (session.recursive?.enabled !== true) return undefined
+  return session.recursive.strategy ?? "hybrid"
+}
+
+function usesRecursiveContextTools(strategy: ReturnType<typeof recursiveStrategy>) {
+  return strategy === "rlm" || strategy === "hybrid"
+}
+
+function usesRecursiveAgentHarness(strategy: ReturnType<typeof recursiveStrategy>) {
+  return strategy === "rah" || strategy === "hybrid"
+}
 
 function mcpResourceBase64Size(value: string) {
   const trimmed = value.replace(/\s/g, "")
@@ -1251,20 +1266,26 @@ export const layer = Layer.effect(
             if (step === 1)
               yield* summary.summarize({ sessionID, messageID: lastUser.id }).pipe(Effect.ignore, Effect.forkIn(scope))
 
-            yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
+            const recursive = recursiveStrategy(session)
+            const recursiveContext = usesRecursiveContextTools(recursive)
+            const modelContextMessages = msgs
+
+            yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: modelContextMessages })
 
             const [skills, env, instructions, mcpInstructions, modelMsgs] = yield* Effect.all([
               sys.skills(agent),
               sys.environment(model),
               instruction.system().pipe(Effect.orDie),
               sys.mcp(agent, session.permission),
-              MessageV2.toModelMessagesEffect(msgs, model),
+              MessageV2.toModelMessagesEffect(modelContextMessages, model),
             ])
             const system = [
               ...env,
               ...instructions,
               ...(mcpInstructions ? [mcpInstructions] : []),
               ...(skills ? [skills] : []),
+              ...(recursiveContext ? [RECURSIVE_RLM_SYSTEM_PROMPT] : []),
+              ...(usesRecursiveAgentHarness(recursive) ? [RECURSIVE_RAH_SYSTEM_PROMPT] : []),
             ]
             const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
@@ -1358,6 +1379,28 @@ export const layer = Layer.effect(
         command: input.command,
         agent: input.agent,
       })
+      if (input.command === Command.Default.COMPACT) {
+        const model = input.model ? Provider.parseModel(input.model) : yield* currentModel(input.sessionID)
+        const agent = input.agent ?? (yield* agents.defaultInfo()).name
+        yield* revert.cleanup(yield* sessions.get(input.sessionID).pipe(Effect.orDie))
+        yield* compaction.create({
+          sessionID: input.sessionID,
+          agent,
+          model: {
+            providerID: model.providerID,
+            modelID: model.modelID,
+          },
+          auto: false,
+        })
+        const result = yield* loop({ sessionID: input.sessionID })
+        yield* events.publish(Command.Event.Executed, {
+          name: input.command,
+          sessionID: input.sessionID,
+          arguments: input.arguments,
+          messageID: result.info.id,
+        })
+        return result
+      }
       const cmd = yield* commands.get(input.command)
       if (!cmd) {
         const available = (yield* commands.list()).map((c) => c.name)

@@ -45,6 +45,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { SessionMessage } from "@opencode-ai/schema/session-message"
+import { SessionRecursive } from "@opencode-ai/schema/session-recursive"
 
 const runtime = makeRuntime(Database.Service, Database.defaultLayer)
 
@@ -58,6 +59,13 @@ export function isDefaultTitle(title: string) {
 }
 
 type SessionRow = typeof SessionTable.$inferSelect
+const decodeRecursive = Schema.decodeUnknownOption(SessionRecursive.Info)
+
+function recursive(row: SessionRow) {
+  const value = row.metadata?.recursive
+  if (value === undefined) return undefined
+  return Option.getOrUndefined(decodeRecursive(value))
+}
 
 export function fromRow(row: SessionRow): Info {
   const summary =
@@ -109,6 +117,7 @@ export function fromRow(row: SessionRow): Info {
     },
     share,
     metadata: row.metadata ?? undefined,
+    recursive: recursive(row),
     revert,
     permission: row.permission ? [...row.permission] : undefined,
     time: {
@@ -241,6 +250,7 @@ export const Info = Schema.Struct({
   model: optional(Model),
   version: Schema.String,
   metadata: optional(Metadata),
+  recursive: optional(SessionRecursive.Info),
   time: Time,
   permission: optional(PermissionV1.Ruleset),
   revert: optional(Revert),

@@ -5,10 +5,12 @@ import {
   LLMEvent,
   Message,
   SystemPart,
+  ToolFailure,
   isContextOverflowFailure,
   type ProviderErrorEvent,
 } from "@opencode-ai/llm"
-import { Cause, DateTime, Effect, FiberSet, Layer, Option, Semaphore, Stream } from "effect"
+import { eq } from "drizzle-orm"
+import { Cause, DateTime, Duration, Effect, FiberSet, Layer, Option, Schema, Semaphore, Stream } from "effect"
 import { AgentV2 } from "../../agent"
 import { Config } from "../../config"
 import { Database } from "../../database/database"
@@ -22,13 +24,17 @@ import { SystemContextRegistry } from "../../system-context/registry"
 import { SkillGuidance } from "../../skill/guidance"
 import { ReferenceGuidance } from "../../reference/guidance"
 import { ToolRegistry } from "../../tool/registry"
+import { Tool } from "../../tool/tool"
 import { ToolOutputStore } from "../../tool-output-store"
 import { SessionContextEpoch } from "../context-epoch"
 import { SessionCompaction } from "../compaction"
 import { SessionEvent } from "../event"
 import { SessionHistory } from "../history"
 import { SessionInput } from "../input"
+import { SessionMessage } from "../message"
+import { Prompt } from "../prompt"
 import { SessionSchema } from "../schema"
+import { SessionTable } from "../sql"
 import { SessionStore } from "../store"
 import { type RunError, Service } from "./index"
 import { SessionRunnerModel } from "./model"
@@ -38,6 +44,169 @@ import { MAX_STEPS_PROMPT } from "./max-steps"
 import { Snapshot } from "../../snapshot"
 import { makeLocationNode } from "../../effect/app-node"
 import { llmClient } from "../../effect/app-node-platform"
+import { SessionV1 } from "../../v1/session"
+import { Slug } from "../../util/slug"
+import { InstallationVersion } from "../../installation/version"
+import { toV1Ruleset } from "../../permission/legacy"
+
+const RECURSIVE_RECENT_MESSAGES = 12
+const RECURSIVE_CONTEXT_MAX_ENTRIES = 500
+const RECURSIVE_CONTEXT_MAX_TEXT = 4000
+const RAH_MAX_DEPTH = 2
+const RAH_MAX_CHILDREN = 6
+const RAH_MAX_PROMPT_CHARS = 12_000
+const RAH_TASK_TIMEOUT = Duration.minutes(30)
+const RECURSIVE_RLM_SYSTEM = `Recursive RLM mode is enabled for this session.
+Older session context is available through context_search, context_read, and context_recent. Do not rely on memory for old details. Query external context before answering questions about earlier work, decisions, files, failures, or long-running session state.`
+const RECURSIVE_RAH_SYSTEM = `Recursive Agent Harness mode is enabled for this session.
+For complex work, decompose the request into explicit smaller investigations or implementation slices before acting. Use the todo tool when available to track multi-step recursive work: create concise actionable items, keep exactly one item in progress, mark items complete as soon as they are verified, and add follow-up items for blockers or discoveries. Use available task or subagent tools for independent subtasks when they are present, but keep fanout bounded: at most 6 direct subtasks per session, depth at most 2, and no background subtasks. Reconcile subtask results into one coherent answer or implementation plan, and avoid todos or subtasks for simple local edits.`
+
+type HistoryEntry = { readonly seq: number; readonly message: SessionMessage.Message }
+type RecursiveContextEntry = { readonly seq: number; readonly type: SessionMessage.Type; readonly text: string }
+
+function recursiveContextEntries(entries: readonly HistoryEntry[]) {
+  return entries.slice(-RECURSIVE_CONTEXT_MAX_ENTRIES).map((entry) => ({
+    seq: entry.seq,
+    type: entry.message.type,
+    text: truncate(messageText(entry.message).replace(/\s+/g, " ").trim(), RECURSIVE_CONTEXT_MAX_TEXT),
+  }))
+}
+
+function recursiveContextTools(entries: readonly RecursiveContextEntry[]) {
+  const format = (entry: RecursiveContextEntry) =>
+    [`seq=${entry.seq}`, `type=${entry.type}`, truncate(entry.text, 1200)].join("\n")
+
+  return {
+    context_search: Tool.make({
+      description: "Search older external session context. Returns matching message sequence numbers and excerpts.",
+      input: Schema.Struct({
+        query: Schema.String,
+        limit: Schema.Number.pipe(Schema.optional),
+      }),
+      output: Schema.String,
+      execute: (input) =>
+        Effect.sync(() => {
+          const query = input.query.trim().toLowerCase()
+          if (!query) return "No query provided."
+          const limit = Math.min(Math.max(input.limit ?? 10, 1), 50)
+          const matches = entries
+            .filter((entry) => entry.text.toLowerCase().includes(query))
+            .slice(-limit)
+          if (matches.length === 0) return "No matches."
+          return matches.map(format).join("\n\n---\n\n")
+        }),
+    }),
+    context_read: Tool.make({
+      description: "Read external session context by message sequence number.",
+      input: Schema.Struct({
+        seq: Schema.Number,
+      }),
+      output: Schema.String,
+      execute: (input) =>
+        Effect.sync(() => {
+          const match = entries.find((entry) => entry.seq === input.seq)
+          if (!match) return `No message found for seq=${input.seq}.`
+          return format(match)
+        }),
+    }),
+    context_recent: Tool.make({
+      description: "Read recent external session context outside the visible working set.",
+      input: Schema.Struct({
+        limit: Schema.Number.pipe(Schema.optional),
+      }),
+      output: Schema.String,
+      execute: (input) =>
+        Effect.sync(() => {
+          const limit = Math.min(Math.max(input.limit ?? RECURSIVE_RECENT_MESSAGES, 1), 50)
+          const matches = entries
+            .slice(-limit)
+            .map(format)
+            .join("\n\n---\n\n")
+          return matches || "No external context."
+        }),
+    }),
+  }
+}
+
+function messageText(message: SessionMessage.Message): string {
+  switch (message.type) {
+    case "agent-switched":
+      return `Agent switched: ${message.agent}`
+    case "model-switched":
+      return `Model switched: ${message.model.providerID}/${message.model.id}`
+    case "user":
+      return message.text
+    case "synthetic":
+      return message.text
+    case "system":
+      return message.text
+    case "shell":
+      return `Shell command: ${message.command}\n${message.output}`
+    case "assistant":
+      return message.content.map(assistantContentText).filter(Boolean).join("\n")
+    case "compaction":
+      return `${message.summary}\n${message.recent}`
+  }
+}
+
+function assistantContentText(content: SessionMessage.AssistantContent): string {
+  if (content.type === "text" || content.type === "reasoning") return content.text
+  if (content.state.status === "pending") return `Tool: ${content.name}\n${JSON.stringify(content.state.input)}`
+  const toolOutput = content.state.content
+    .map((item) => (item.type === "text" ? item.text : item.type === "file" ? item.name ?? item.mime : ""))
+    .filter(Boolean)
+    .join("\n")
+  return [`Tool: ${content.name}`, toolOutput].filter(Boolean).join("\n")
+}
+
+function truncate(value: string, length: number) {
+  if (value.length <= length) return value
+  return value.slice(0, length) + "\n[truncated]"
+}
+
+function recursiveStrategy(session: SessionSchema.Info) {
+  if (session.recursive?.enabled !== true) return undefined
+  return session.recursive.strategy ?? "hybrid"
+}
+
+function usesRecursiveContextTools(strategy: ReturnType<typeof recursiveStrategy>) {
+  return strategy === "rlm" || strategy === "hybrid"
+}
+
+function usesRecursiveAgentHarness(strategy: ReturnType<typeof recursiveStrategy>) {
+  return strategy === "rah" || strategy === "hybrid"
+}
+
+function taskOutput(input: {
+  readonly sessionID: SessionSchema.ID
+  readonly state: "completed" | "error"
+  readonly text: string
+}) {
+  const tag = input.state === "error" ? "task_error" : "task_result"
+  return [`<task id="${input.sessionID}" state="${input.state}">`, `<${tag}>`, input.text, `</${tag}>`, "</task>"].join(
+    "\n",
+  )
+}
+
+function delegateTaskPermission(parent: SessionSchema.Info, childAgent: AgentV2.Info): SessionSchema.Info["permission"] {
+  const inherited = (parent.permission ?? []).filter(
+    (rule) => rule.action === "external_directory" || rule.effect === "deny",
+  )
+  const denies = [
+    ...(childAgent.permissions.some((rule) => rule.action === "todowrite")
+      ? []
+      : [{ action: "todowrite" as const, resource: "*" as const, effect: "deny" as const }]),
+    ...(childAgent.permissions.some((rule) => rule.action === "delegate_task")
+      ? []
+      : [{ action: "delegate_task" as const, resource: "*" as const, effect: "deny" as const }]),
+  ]
+  return [
+    ...inherited,
+    ...denies.filter(
+      (deny) => !inherited.some((rule) => rule.action === deny.action && rule.resource === deny.resource),
+    ),
+  ]
+}
 
 /**
  * Runs one durable coding-agent Session until it settles.
@@ -165,6 +334,151 @@ export const layer = Layer.effect(
         concurrency: "unbounded",
       }).pipe(Effect.map(SystemContext.combine))
 
+    const childDepth = (session: SessionSchema.Info): Effect.Effect<number> =>
+      Effect.gen(function* () {
+        if (!session.parentID) return 0
+        const parent = yield* store.get(session.parentID)
+        if (!parent) return 0
+        return 1 + (yield* childDepth(parent))
+      })
+
+    const createChildSession = Effect.fn("SessionRunner.delegateTask.createChild")(function* (input: {
+      readonly parent: SessionSchema.Info
+      readonly agent: AgentV2.Selection
+      readonly title: string
+      readonly permission: SessionSchema.Info["permission"]
+    }) {
+      const sessionID = SessionSchema.ID.create()
+      const now = Date.now()
+      const info = SessionV1.SessionInfo.make({
+        id: sessionID,
+        slug: Slug.create(),
+        version: InstallationVersion,
+        projectID: input.parent.projectID,
+        directory: input.parent.location.directory,
+        path: input.parent.subpath,
+        workspaceID: input.parent.location.workspaceID,
+        parentID: input.parent.id,
+        title: input.title,
+        agent: input.agent.id,
+        model: input.agent.info?.model ?? input.parent.model,
+        metadata: input.parent.recursive ? { recursive: input.parent.recursive } : undefined,
+        permission: toV1Ruleset(input.permission),
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        time: { created: now, updated: now },
+      })
+      yield* events.publish(SessionV1.Event.Created, { sessionID, info }, { location: input.parent.location })
+      const child = yield* store.get(sessionID)
+      if (!child) return yield* Effect.die(`Failed to create delegated task session: ${sessionID}`)
+      return child
+    })
+
+    const delegateTaskTools = (parent: SessionSchema.Info, runChild: typeof run) => ({
+      delegate_task: Tool.make({
+        description:
+          "Delegate one bounded foreground subtask to a subagent. Use for independent research or implementation slices in RAH mode. Do not use for trivial edits. Max depth 2 and max 6 direct child tasks are enforced.",
+        input: Schema.Struct({
+          description: Schema.String,
+          prompt: Schema.String,
+          subagent_type: Schema.String,
+        }),
+        output: Schema.String,
+        execute: (input, context) =>
+          Effect.gen(function* () {
+            const depth = yield* childDepth(parent)
+            if (depth >= RAH_MAX_DEPTH)
+              return yield* Effect.fail(new ToolFailure({ message: `delegate_task exceeded max depth ${RAH_MAX_DEPTH}` }))
+            if (input.prompt.length > RAH_MAX_PROMPT_CHARS)
+              return yield* Effect.fail(
+                new ToolFailure({ message: `delegate_task prompt exceeded ${RAH_MAX_PROMPT_CHARS} characters` }),
+              )
+            const directChildren = yield* db
+              .select({ id: SessionTable.id, title: SessionTable.title })
+              .from(SessionTable)
+              .where(eq(SessionTable.parent_id, parent.id))
+              .all()
+              .pipe(Effect.orDie)
+            if (directChildren.length >= RAH_MAX_CHILDREN)
+              return yield* Effect.fail(
+                new ToolFailure({ message: `delegate_task exceeded max children ${RAH_MAX_CHILDREN}` }),
+              )
+            if (directChildren.some((child) => child.title.startsWith(`${input.description} (`)))
+              return yield* Effect.fail(
+                new ToolFailure({ message: `delegate_task duplicate direct child task: ${input.description}` }),
+              )
+            const childAgent = yield* agents.select(input.subagent_type)
+            if (!childAgent.info)
+              return yield* Effect.fail(new ToolFailure({ message: `Unknown subagent: ${input.subagent_type}` }))
+            if (childAgent.info.mode !== "subagent" && childAgent.info.mode !== "all")
+              return yield* Effect.fail(
+                new ToolFailure({ message: `Agent is not available as a subagent: ${input.subagent_type}` }),
+              )
+            const childPermission = delegateTaskPermission(parent, childAgent.info)
+            const child = yield* createChildSession({
+              parent,
+              agent: childAgent,
+              title: `${input.description} (@${childAgent.id} subagent)`,
+              permission: childPermission,
+            })
+            yield* events.publish(SessionEvent.Task.Started, {
+              sessionID: parent.id,
+              timestamp: yield* DateTime.now,
+              assistantMessageID: context.assistantMessageID,
+              callID: context.toolCallID,
+              taskSessionID: child.id,
+              description: input.description,
+              agent: childAgent.id,
+            })
+            yield* SessionInput.admit(db, events, {
+              id: SessionMessage.ID.create(),
+              sessionID: child.id,
+              prompt: Prompt.fromUserMessage({ text: input.prompt }),
+              delivery: "steer",
+            })
+            const result = yield* Effect.gen(function* () {
+              yield* runChild({ sessionID: child.id, force: true })
+              return (yield* store.context(child.id))
+                .filter((message): message is SessionMessage.Assistant => message.type === "assistant")
+                .flatMap((message) => message.content)
+                .filter((content): content is SessionMessage.AssistantText => content.type === "text")
+                .at(-1)?.text
+            }).pipe(
+              Effect.timeoutOrElse({
+                duration: RAH_TASK_TIMEOUT,
+                orElse: () => Effect.fail(new ToolFailure({ message: "delegate_task timed out after 30 minutes" })),
+              }),
+              Effect.exit,
+            )
+            if (result._tag === "Failure") {
+              const failure = Cause.squash(result.cause)
+              const message = failure instanceof Error ? failure.message : String(failure)
+              yield* events.publish(SessionEvent.Task.Failed, {
+                sessionID: parent.id,
+                timestamp: yield* DateTime.now,
+                assistantMessageID: context.assistantMessageID,
+                callID: context.toolCallID,
+                taskSessionID: child.id,
+                error: { type: "unknown", message },
+              })
+              return yield* Effect.fail(new ToolFailure({ message }))
+            }
+            yield* events.publish(SessionEvent.Task.Completed, {
+              sessionID: parent.id,
+              timestamp: yield* DateTime.now,
+              assistantMessageID: context.assistantMessageID,
+              callID: context.toolCallID,
+              taskSessionID: child.id,
+            })
+            return taskOutput({
+              sessionID: child.id,
+              state: "completed",
+              text: result.value ?? "Task completed without text output.",
+            })
+          }),
+      }),
+    })
+
     const runTurnAttempt = Effect.fn("SessionRunner.runTurn")(function* (
       sessionID: SessionSchema.ID,
       promotion: SessionInput.Delivery | undefined,
@@ -193,14 +507,27 @@ export const layer = Layer.effect(
         initialized ?? (yield* SessionContextEpoch.prepare(db, events, loadSystemContext(agent), session.id))
       const model = yield* models.resolve(session)
       const entries = yield* SessionHistory.entriesForRunner(db, session.id, system.baselineSeq)
-      const context = entries.map((entry) => entry.message)
+      const recursive = recursiveStrategy(session)
+      const recursiveContext = usesRecursiveContextTools(recursive)
+      const recursiveTools = {
+        ...(recursiveContext ? recursiveContextTools(recursiveContextEntries(entries.slice(0, -RECURSIVE_RECENT_MESSAGES))) : {}),
+        ...(usesRecursiveAgentHarness(recursive) ? delegateTaskTools(session, run) : {}),
+      }
+      const context = (recursiveContext ? entries.slice(-RECURSIVE_RECENT_MESSAGES) : entries).map(
+        (entry) => entry.message,
+      )
       const isLastStep = agent.info?.steps !== undefined && currentStep >= agent.info.steps
-      const toolMaterialization = isLastStep ? undefined : yield* tools.materialize(agent.info?.permissions)
+      const toolMaterialization = isLastStep ? undefined : yield* tools.materialize(agent.info?.permissions, recursiveTools)
       const promptCacheKey = /^ses_[0-9a-f]{64}$/.test(session.id) ? session.id.slice(4) : session.id
       const request = LLM.request({
         model,
         providerOptions: { openai: { promptCacheKey } },
-        system: [agent.info?.system, system.baseline]
+        system: [
+          agent.info?.system,
+          system.baseline,
+          recursiveContext ? RECURSIVE_RLM_SYSTEM : undefined,
+          usesRecursiveAgentHarness(recursive) ? RECURSIVE_RAH_SYSTEM : undefined,
+        ]
           .filter((part): part is string => part !== undefined && part.length > 0)
           .map(SystemPart.make),
         messages: [...toLLMMessages(context, model), ...(isLastStep ? [Message.assistant(MAX_STEPS_PROMPT)] : [])],
@@ -335,8 +662,7 @@ export const layer = Layer.effect(
           if (stream._tag === "Success" && !publisher.hasProviderError())
             yield* withPublication(publisher.failUnsettledTools("Provider did not return a tool result", true))
           if (stream._tag === "Failure") return yield* Effect.failCause(stream.cause)
-          if (settled._tag === "Failure" && Cause.hasInterrupts(settled.cause))
-            return yield* Effect.failCause(settled.cause)
+          if (settled._tag === "Failure") return yield* Effect.failCause(settled.cause)
           return { needsContinuation: !publisher.hasProviderError() && needsContinuation, step: currentStep }
         }),
       )

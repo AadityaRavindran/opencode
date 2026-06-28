@@ -1,0 +1,52 @@
+---
+title: "Recursive mode"
+description: "Use recursive context and agent-harness strategies in a session"
+icon: "arrows-spin"
+---
+
+Recursive mode is an experimental per-session mode for long-running work. It changes how opencode assembles model context and how it asks the model to decompose complex tasks.
+
+## Commands
+
+Run these from the prompt input:
+
+```text
+/recursive on
+/recursive on rlm
+/recursive on rah
+/recursive on hybrid
+/recursive status
+/recursive off
+```
+
+`/recursive on` defaults to `hybrid`.
+
+## Strategies
+
+`rlm` uses recursive context management. In the native V2 runner, opencode keeps only the most recent session messages in the visible model request and exposes a bounded older-history index through context lookup tools. The model is instructed to search or read older context before relying on memory for earlier decisions, files, failures, or long-running session state.
+
+`rah` keeps the normal visible history and adds Recursive Agent Harness guidance. The model is instructed to decompose complex work into smaller investigations or implementation slices, use the todo tool for multi-step work, and use available subagent or task tools when they are present. Simple local edits should stay inline without todos or subtasks.
+
+In the current legacy/TUI runtime, RAH uses the existing `task` tool as the execution backend. In the native V2 runner, RAH exposes `delegate_task` with the same foreground-only limits. Each delegated task creates a child session and returns the child result to the parent as tool output. RAH enforces these limits on task delegation: max depth `2`, max direct child tasks `6`, max prompt size `12000` characters, no duplicate direct child task descriptions, a 30 minute foreground timeout, and no background subtasks.
+
+`hybrid` combines both behaviors in the native V2 runner: recent visible context plus older-context lookup tools, with recursive decomposition guidance for complex work.
+
+<Note>
+
+The current TUI/legacy runtime keeps the full visible history for `rlm` and `hybrid` instead of trimming to recent messages, because that path does not yet expose older-history lookup tools. This avoids losing task context while the native V2 retrieval path is still experimental.
+
+</Note>
+
+## Persistence
+
+Recursive mode is stored on the current session. Once enabled, it affects later prompts in that session until `/recursive off` is run. New sessions start with recursive mode off.
+
+The TUI sidebar shows the current state as `Recursive: Off`, `Recursive: On (RLM)`, `Recursive: On (RAH)`, or `Recursive: On (HYBRID)`. It also shows the number of direct child task sessions for the current session.
+
+## Limitations
+
+Recursive mode is experimental. The current native implementation provides bounded context-window control, older-history lookup, foreground delegated subtasks, inherited deny/external-directory permission constraints, durable task status events, and a sidebar direct-task count. It does not yet provide a full task-tree UI, full per-subtree cost/token budgets, crash reconciliation for in-flight child tasks, or a benchmark harness for recursive subagent trees.
+
+Long unattended recursive sessions can still run for many provider turns and consume significant model, tool, and local memory resources. Use agent step limits or interrupt the session if it starts looping or repeatedly loses task context.
+
+For long tasks, check the todo list periodically. Healthy recursive runs should keep the list small, maintain one in-progress item, and close or revise stale items as work changes.
