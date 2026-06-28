@@ -43,9 +43,42 @@ Recursive mode is stored on the current session. Once enabled, it affects later 
 
 The TUI sidebar shows the current state as `Recursive: Off`, `Recursive: On (RLM)`, `Recursive: On (RAH)`, or `Recursive: On (HYBRID)`. It also shows the number of direct child task sessions for the current session.
 
+## Benchmark Harness
+
+Use the recursive benchmark harness to compare `off`, `rlm`, `rah`, and `hybrid` against the same prompt in separate git worktrees. This keeps each run's final file changes available for manual review after the benchmark finishes.
+
+Run from `packages/opencode`:
+
+```bash
+bun run bench:recursive -- --prompt-file ../../prompt.txt --model openai/gpt-5.5 --runs 3
+```
+
+Common options:
+
+```bash
+--modes off,rlm,rah,hybrid
+--base dev
+--out ../../.recursive-bench/my-run
+--agent build
+--dangerously-skip-permissions
+--no-run
+--no-copy-working-tree
+```
+
+By default, the harness creates one worktree per mode and run, copies the current dirty tracked and untracked worktree changes into each target, starts a local opencode server, creates a session, sets the requested recursive mode through the HTTP API, runs the prompt, and waits for the session to become idle.
+
+The output directory contains:
+
+- `summary.csv` and `summary.json` with tokens, cost, duration, assistant messages, tool calls, task calls, context tool calls, delegated calls, child count, and errors.
+- `artifacts/<mode>-<run>/events.jsonl` with the raw event stream.
+- `artifacts/<mode>-<run>/messages.json`, `session.json`, `children.json`, and `diff.stat.txt` for post-run inspection.
+- `worktrees/<mode>-<run>/` with final git worktrees for manual `git diff` comparison.
+
+Use `--no-run` when you only want the worktrees and runbook created. Remove worktrees manually after inspection with `git worktree remove <path>`.
+
 ## Limitations
 
-Recursive mode is experimental. The current native implementation provides bounded context-window control, older-history lookup, foreground delegated subtasks, inherited deny/external-directory permission constraints, durable task status events, and a sidebar direct-task count. It does not yet provide a full task-tree UI, full per-subtree cost/token budgets, crash reconciliation for in-flight child tasks, or a benchmark harness for recursive subagent trees.
+Recursive mode is experimental. The current native implementation provides bounded context-window control, older-history lookup, foreground delegated subtasks, inherited deny/external-directory permission constraints, durable task status events, a sidebar direct-task count, and a worktree-based benchmark harness. It does not yet provide a full task-tree UI, full per-subtree cost/token budgets, or crash reconciliation for in-flight child tasks.
 
 Long unattended recursive sessions can still run for many provider turns and consume significant model, tool, and local memory resources. Use agent step limits or interrupt the session if it starts looping or repeatedly loses task context.
 
